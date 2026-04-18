@@ -1888,13 +1888,14 @@ export function ContentProductionTool({
                 const label = publishResult.rankMath ? "Rank Math" : "Yoast SEO";
                 if (seo?.focusKeyphrase == null) return null;
                 const rejected = seo.metaDescriptionSet === false;
+                const persistHint = publishResult.yoast
+                  ? "Yoast SEO may need _yoast_wpseo_* meta keys registered for the REST API on the site."
+                  : "Rank Math may need REST meta registration on the site.";
                 return (
                   <p className="mt-2 text-sm text-green-800">
-                    {label}: attempted meta title, description, and focus keyword via REST (focus:{" "}
+                    {label}: set SEO title, meta description, and focus keyphrase via REST (focus:{" "}
                     <span className="font-mono">{seo.focusKeyphrase}</span>
-                    {rejected
-                      ? ". WordPress did not persist meta fields; Rank Math may need REST meta registration on the site."
-                      : "."}
+                    {rejected ? `. WordPress did not persist meta fields; ${persistHint}` : "."}
                   </p>
                 );
               })()}

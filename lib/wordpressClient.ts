@@ -470,6 +470,51 @@ export async function updatePost(
   };
 }
 
+export type WPCategoryRow = {
+  id: number;
+  name: string;
+  slug: string;
+  parent: number;
+};
+
+/**
+ * Lists all post categories (paginated). Uses same auth as other REST reads.
+ */
+export async function listAllCategories(site: WPSite): Promise<WPCategoryRow[]> {
+  const base = site.url.replace(/\/$/, "");
+  const out: WPCategoryRow[] = [];
+  let page = 1;
+  const perPage = 100;
+
+  for (;;) {
+    const res = await wpFetch(
+      wpRestUrl(
+        base,
+        `wp/v2/categories?per_page=${perPage}&page=${page}&_fields=id,name,slug,parent`
+      ),
+      { headers: wpRestHeaders(site) }
+    );
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`WP listAllCategories failed: ${res.status} ${errText}`);
+    }
+    const rows = (await res.json()) as Array<{ id: number; name?: string; slug?: string; parent?: number }>;
+    if (!Array.isArray(rows) || rows.length === 0) break;
+    for (const r of rows) {
+      out.push({
+        id: r.id,
+        name: (r.name ?? "").trim(),
+        slug: (r.slug ?? "").trim(),
+        parent: typeof r.parent === "number" ? r.parent : 0,
+      });
+    }
+    if (rows.length < perPage) break;
+    page += 1;
+    if (page > 50) break;
+  }
+  return out;
+}
+
 export async function getCategoryIdByName(site: WPSite, categoryName: string): Promise<number | null> {
   const base = site.url.replace(/\/$/, "");
   const needle = categoryName.trim().toLowerCase();
@@ -639,17 +684,31 @@ export async function updatePostYoastMeta(
   }
   if (Object.keys(meta).length === 0) return true;
 
-  const res = await wpFetch(wpRestUrl(base, `wp/v2/posts/${postId}`), {
-    method: "POST",
-    headers: wpRestHeaders(site, { contentTypeJson: true }),
-    body: JSON.stringify({ meta }),
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    console.warn(`[updatePostYoastMeta] ${res.status} ${errText}`);
-    return false;
+  const topLevel: Record<string, string> = {};
+  if (meta._yoast_wpseo_metadesc) topLevel._yoast_wpseo_metadesc = meta._yoast_wpseo_metadesc;
+  if (meta._yoast_wpseo_focuskw) topLevel._yoast_wpseo_focuskw = meta._yoast_wpseo_focuskw;
+  if (meta._yoast_wpseo_title) topLevel._yoast_wpseo_title = meta._yoast_wpseo_title;
+
+  const payloads: Array<Record<string, unknown>> = [{ meta }, { meta_input: { ...meta } }];
+  if (Object.keys(topLevel).length > 0) {
+    payloads.push(topLevel);
   }
-  return true;
+
+  for (let i = 0; i < payloads.length; i++) {
+    const res = await wpFetch(wpRestUrl(base, `wp/v2/posts/${postId}`), {
+      method: "POST",
+      headers: wpRestHeaders(site, { contentTypeJson: true }),
+      body: JSON.stringify(payloads[i]),
+    });
+    if (res.ok) return true;
+    const errText = await res.text();
+    console.warn(`[updatePostYoastMeta] attempt ${i + 1} failed: ${res.status} ${errText.slice(0, 400)}`);
+  }
+
+  console.warn(
+    "[updatePostYoastMeta] Yoast fields not persisted. Ensure _yoast_wpseo_* meta keys are registered for REST (Yoast SEO → REST API / show_in_rest)."
+  );
+  return false;
 }
 
 /** Rank Math SEO post meta (requires Rank Math meta to be writable via REST on the site). */

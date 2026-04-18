@@ -2,10 +2,17 @@ import { NextResponse } from "next/server";
 import { getSiteById, WP_TOOL_SCOPE, type WPToolScope } from "@/lib/wpSites";
 import { lockExpertBoxTypography, stripLeadingPostTitleH1 } from "@/lib/postHtml";
 import {
+  categoriesForGreenOrgPublish,
+  pickGreenOrgCategoryIds,
+  isGreenOrgSite,
+} from "@/lib/contentProduction/greenOrgCategoryPicker";
+import {
   createPost,
   getCategoryIdByName,
+  listAllCategories,
   setPostFeaturedMedia,
   updatePost,
+  updatePostYoastMeta,
   uploadMedia,
   updateMediaDetails,
   updatePostRankMathMeta,
@@ -325,6 +332,7 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
     const withImages = injectInContentImages(withFeaturedAtStart, placements);
     const finalContent = appendReferenceDisclaimer(withImages, referenceUrl);
     const taxonomyOpts: { categories?: number[]; tags?: number[] } = {};
+    let greenOrgCategoryIds: number[] | undefined;
     if (toolScope === WP_TOOL_SCOPE.weedComContentProduction) {
       const learnCategoryId = await getCategoryIdByName(site, "learn");
       if (learnCategoryId != null && learnCategoryId > 0) {
@@ -333,6 +341,23 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
         console.warn('[publish] Could not resolve category "learn"; publishing without category assignment.');
       }
       taxonomyOpts.tags = [4337];
+    } else if (toolScope === WP_TOOL_SCOPE.contentProduction && isGreenOrgSite(site)) {
+      const wpCategories = await categoriesForGreenOrgPublish(() => listAllCategories(site));
+      if (wpCategories.length > 0) {
+        greenOrgCategoryIds = await pickGreenOrgCategoryIds({
+          title,
+          keywords,
+          articleHtml: finalContent,
+          categories: wpCategories,
+        });
+        if (greenOrgCategoryIds.length > 0) {
+          taxonomyOpts.categories = greenOrgCategoryIds;
+        } else {
+          console.warn("[publish] Green.org: no category ids chosen; publishing without category assignment.");
+        }
+      } else {
+        console.warn("[publish] Green.org: no categories available (REST and snapshot empty).");
+      }
     }
     const { id: postId, link, editUrl, status } =
       existingPostId != null
@@ -344,11 +369,28 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
 
     const metadesc = buildMetaDescription(finalContent);
     const seoTitle = title.slice(0, 200);
-    const rankMathOk = await updatePostRankMathMeta(site, postId, {
-      metadesc,
-      focuskw: rankMathFocusKw,
-      seoTitle,
-    });
+
+    let yoastMetaOk: boolean | undefined;
+    let rankMathOk: boolean | undefined;
+    if (toolScope === WP_TOOL_SCOPE.contentProduction && isGreenOrgSite(site)) {
+      yoastMetaOk = await updatePostYoastMeta(site, postId, {
+        metadesc,
+        focuskw: rankMathFocusKw,
+        seoTitle,
+      });
+    } else if (toolScope === WP_TOOL_SCOPE.weedComContentProduction) {
+      rankMathOk = await updatePostRankMathMeta(site, postId, {
+        metadesc,
+        focuskw: rankMathFocusKw,
+        seoTitle,
+      });
+    } else {
+      rankMathOk = await updatePostRankMathMeta(site, postId, {
+        metadesc,
+        focuskw: rankMathFocusKw,
+        seoTitle,
+      });
+    }
 
     if (status !== "draft") {
       console.warn(
@@ -363,7 +405,22 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
       status,
       updated: existingPostId != null,
       site: { name: site.name, url: site.url },
-      rankMath: { metaDescriptionSet: rankMathOk, focusKeyphrase: rankMathFocusKw },
+      ...(yoastMetaOk !== undefined
+        ? {
+            yoast: {
+              metaDescriptionSet: yoastMetaOk,
+              focusKeyphrase: rankMathFocusKw,
+              seoTitleSet: yoastMetaOk,
+            },
+          }
+        : rankMathOk !== undefined
+          ? {
+              rankMath: { metaDescriptionSet: rankMathOk, focusKeyphrase: rankMathFocusKw },
+            }
+          : {}),
+      ...(greenOrgCategoryIds != null && greenOrgCategoryIds.length > 0
+        ? { wordPressCategoryIds: greenOrgCategoryIds }
+        : {}),
     });
   } catch (err) {
     const msg = errorMessage(err);

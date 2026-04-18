@@ -1,4 +1,4 @@
-import { ApiError, GoogleGenAI, PersonGeneration, SafetyFilterLevel } from "@google/genai";
+import { ApiError, GoogleGenAI, Modality, PersonGeneration, SafetyFilterLevel } from "@google/genai";
 import { errorMessage } from "@/lib/serverLog";
 
 /** Thrown when retryable Imagen errors persist after all attempts (client should show 503-style guidance). */
@@ -15,6 +15,13 @@ export const IMAGE_GENERATION_EMPTY_USER_MESSAGE =
 
 /** Internal marker for empty-body responses we should retry. */
 const IMAGEN_NO_BYTES_TRANSIENT = "__IMAGEN_NO_BYTES_TRANSIENT__";
+
+/**
+ * If Imagen returns a paid-plan error, `generateImage` falls back to `gemini-2.5-flash-image` automatically.
+ * Exported for tests or callers that document Imagen billing requirements.
+ */
+export const IMAGE_GENERATION_IMAGEN_REQUIRES_PAID_PLAN_MESSAGE =
+  "Imagen (imagen-3/4) requires a paid Google AI plan on this API key; use gemini-2.5-flash-image or rely on automatic fallback.";
 
 type GeneratedImageEntry = {
   image?: { imageBytes?: string; mimeType?: string };
@@ -41,6 +48,33 @@ function pickImageFromResult(result: { generatedImages?: GeneratedImageEntry[] }
     throw new Error(`Imagen content policy: ${raiReasons[0]}`);
   }
   return null;
+}
+
+function pickImageFromGeminiContent(response: {
+  candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string } }> } }>;
+}): { base64: string; mimeType: string } | null {
+  const parts = response.candidates?.[0]?.content?.parts ?? [];
+  for (const p of parts) {
+    const bytes = p.inlineData?.data;
+    if (typeof bytes === "string" && bytes.length > 0) {
+      return {
+        base64: bytes,
+        mimeType: p.inlineData?.mimeType ?? "image/png",
+      };
+    }
+  }
+  return null;
+}
+
+function usesImagenGenerateImagesApi(modelId: string): boolean {
+  return modelId.toLowerCase().startsWith("imagen");
+}
+
+function isImagenPaidPlanError(err: unknown): boolean {
+  const m = errorMessage(err).toLowerCase();
+  if (m.includes("only available on paid plans")) return true;
+  if (m.includes("upgrade your account") && m.includes("imagen")) return true;
+  return false;
 }
 
 function geminiHttpStatus(err: unknown): number | undefined {
@@ -118,6 +152,17 @@ const BASE_BACKOFF_MS = 3000;
 const MAX_BACKOFF_MS = 120_000;
 const MAX_POLICY_FALLBACKS = 1;
 
+/**
+ * Default: Gemini native image generation (works on free AI Studio tier).
+ * Set GEMINI_IMAGE_MODEL to an `imagen-*` id only if your project has Imagen (paid) access.
+ */
+const DEFAULT_IMAGE_MODEL_ID = "gemini-2.5-flash-image";
+
+function resolvedImageModelId(): string {
+  const m = process.env.GEMINI_IMAGE_MODEL?.trim();
+  return m && m.length > 0 ? m : DEFAULT_IMAGE_MODEL_ID;
+}
+
 async function delayIfNeeded(): Promise<void> {
   const now = Date.now();
   const elapsed = now - lastCallTime;
@@ -171,7 +216,7 @@ function buildPolicySafeFallbackPrompt(originalPrompt: string): string {
 }
 
 export type GenerateImageOptions = {
-  /** Imagen supported: "1:1", "3:4", "4:3", "9:16", "16:9". Editorial/blog images use landscape. */
+  /** Supported: "1:1", "3:4", "4:3", "9:16", "16:9", and "21:9" (Gemini image config). Editorial/blog images use landscape. */
   aspectRatio?: string;
 };
 
@@ -185,6 +230,10 @@ export async function generateImage(
   }
 
   const genAI = new GoogleGenAI({ apiKey });
+  const requestedId = resolvedImageModelId();
+  /** After a paid-plan Imagen error we switch to Gemini for the rest of the request / retries. */
+  let mode: "imagen" | "gemini" = usesImagenGenerateImagesApi(requestedId) ? "imagen" : "gemini";
+  let contentModelId = requestedId;
   let lastErr: unknown;
   let activePrompt = prompt;
   let policyFallbacksUsed = 0;
@@ -192,41 +241,77 @@ export async function generateImage(
   for (let attempt = 0; attempt < MAX_IMAGE_ATTEMPTS; attempt++) {
     await delayIfNeeded();
     try {
-      const result = await genAI.models.generateImages({
-        model: "imagen-4.0-generate-001",
-        prompt: activePrompt,
-        config: {
-          numberOfImages: 1,
-          includeRaiReason: true,
-          // Default 16:9 so featured and in-content images are rectangular (not 1:1).
-          aspectRatio: options?.aspectRatio ?? "16:9",
-          // Imagen API only accepts BLOCK_LOW_AND_ABOVE for this field (400 otherwise).
-          safetyFilterLevel: SafetyFilterLevel.BLOCK_LOW_AND_ABOVE,
-          personGeneration: PersonGeneration.ALLOW_ADULT,
-        },
-      });
+      if (mode === "imagen") {
+        try {
+          const result = await genAI.models.generateImages({
+            model: contentModelId,
+            prompt: activePrompt,
+            config: {
+              numberOfImages: 1,
+              includeRaiReason: true,
+              aspectRatio: options?.aspectRatio ?? "16:9",
+              safetyFilterLevel: SafetyFilterLevel.BLOCK_LOW_AND_ABOVE,
+              personGeneration: PersonGeneration.ALLOW_ADULT,
+            },
+          });
 
-      const picked = pickImageFromResult(result);
-      if (picked) {
-        return picked;
+          const picked = pickImageFromResult(result);
+          if (picked) {
+            return picked;
+          }
+
+          if (process.env.NODE_ENV === "development") {
+            console.warn("[geminiClient] Imagen returned no image bytes", {
+              count: result.generatedImages?.length ?? 0,
+              rai: result.generatedImages?.map((g) => g.raiFilteredReason) ?? [],
+            });
+          }
+
+          throw new Error(IMAGEN_NO_BYTES_TRANSIENT);
+        } catch (imagenErr) {
+          if (isImagenPaidPlanError(imagenErr)) {
+            console.warn(
+              "[geminiClient] Imagen is not available on this API key (paid plan required). Falling back to",
+              DEFAULT_IMAGE_MODEL_ID
+            );
+            mode = "gemini";
+            contentModelId = DEFAULT_IMAGE_MODEL_ID;
+          } else {
+            throw imagenErr;
+          }
+        }
       }
 
-      if (process.env.NODE_ENV === "development") {
-        console.warn("[geminiClient] Imagen returned no image bytes", {
-          count: result.generatedImages?.length ?? 0,
-          rai: result.generatedImages?.map((g) => g.raiFilteredReason) ?? [],
+      if (mode === "gemini") {
+        const response = await genAI.models.generateContent({
+          model: contentModelId,
+          contents: activePrompt,
+          config: {
+            responseModalities: [Modality.TEXT, Modality.IMAGE],
+            imageConfig: {
+              aspectRatio: options?.aspectRatio ?? "16:9",
+            },
+          },
         });
-      }
 
-      throw new Error(IMAGEN_NO_BYTES_TRANSIENT);
+        const picked = pickImageFromGeminiContent(response);
+        if (picked) {
+          return picked;
+        }
+
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[geminiClient] Gemini image model returned no inline image bytes");
+        }
+        throw new Error(IMAGEN_NO_BYTES_TRANSIENT);
+      }
     } catch (err) {
       lastErr = err;
       const msg = errorMessage(err);
       if (isDailyQuotaExceededError(err)) {
-        console.warn("[geminiClient] Imagen quota or billing limit reached — not retrying.");
+        console.warn("[geminiClient] Image generation quota or billing limit reached — not retrying.");
         break;
       }
-      const isPolicyFiltered = msg.startsWith("Imagen content policy:");
+      const isPolicyFiltered = mode === "imagen" && msg.startsWith("Imagen content policy:");
       if (isPolicyFiltered && policyFallbacksUsed < MAX_POLICY_FALLBACKS) {
         policyFallbacksUsed += 1;
         activePrompt = buildPolicySafeFallbackPrompt(prompt);
@@ -240,7 +325,7 @@ export async function generateImage(
       }
       const wait = backoffMs(attempt);
       console.warn(
-        `[geminiClient] Imagen call failed (attempt ${attempt + 1}/${MAX_IMAGE_ATTEMPTS}), retrying in ${wait}ms:`,
+        `[geminiClient] Image generation failed (attempt ${attempt + 1}/${MAX_IMAGE_ATTEMPTS}), retrying in ${wait}ms:`,
         err instanceof Error ? err.message : err
       );
       await sleep(wait);

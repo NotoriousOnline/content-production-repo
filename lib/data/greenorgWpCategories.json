@@ -1,0 +1,308 @@
+[
+  {
+    "id": 90052263,
+    "name": "Agriculture",
+    "slug": "agriculture",
+    "parent": 0
+  },
+  {
+    "id": 90052383,
+    "name": "Alert",
+    "slug": "alert",
+    "parent": 0
+  },
+  {
+    "id": 490,
+    "name": "Animals",
+    "slug": "animals",
+    "parent": 0
+  },
+  {
+    "id": 90052211,
+    "name": "Artificial Intelligence",
+    "slug": "artificial-intelligence",
+    "parent": 0
+  },
+  {
+    "id": 90052522,
+    "name": "Battery and Storage",
+    "slug": "battery-and-storage",
+    "parent": 90052217
+  },
+  {
+    "id": 90052358,
+    "name": "Biofuels",
+    "slug": "biofuels",
+    "parent": 0
+  },
+  {
+    "id": 90052199,
+    "name": "BioTech",
+    "slug": "biotech",
+    "parent": 318
+  },
+  {
+    "id": 90052217,
+    "name": "BlueTech",
+    "slug": "bluetech",
+    "parent": 0
+  },
+  {
+    "id": 179,
+    "name": "Business",
+    "slug": "business",
+    "parent": 0
+  },
+  {
+    "id": 90052200,
+    "name": "CleanTech",
+    "slug": "cleantech",
+    "parent": 318
+  },
+  {
+    "id": 6108,
+    "name": "Climate",
+    "slug": "climate",
+    "parent": 0
+  },
+  {
+    "id": 90052521,
+    "name": "Coral Reefs",
+    "slug": "coral-reefs",
+    "parent": 90052431
+  },
+  {
+    "id": 90052509,
+    "name": "Deforestation",
+    "slug": "deforestation",
+    "parent": 0
+  },
+  {
+    "id": 90052131,
+    "name": "Documentaries",
+    "slug": "documentaries-media",
+    "parent": 292
+  },
+  {
+    "id": 57299,
+    "name": "Documentaries",
+    "slug": "documentaries",
+    "parent": 0
+  },
+  {
+    "id": 90052361,
+    "name": "Eco Vehicles",
+    "slug": "eco-vehicles",
+    "parent": 0
+  },
+  {
+    "id": 1212,
+    "name": "Energy",
+    "slug": "energy",
+    "parent": 0
+  },
+  {
+    "id": 90052246,
+    "name": "Fashion",
+    "slug": "fashion",
+    "parent": 0
+  },
+  {
+    "id": 4269,
+    "name": "Finance",
+    "slug": "finance",
+    "parent": 0
+  },
+  {
+    "id": 90052433,
+    "name": "Food",
+    "slug": "food",
+    "parent": 0
+  },
+  {
+    "id": 90052505,
+    "name": "Fossil Fuels",
+    "slug": "fossil-fuels",
+    "parent": 0
+  },
+  {
+    "id": 90052507,
+    "name": "Geothermal",
+    "slug": "geothermal",
+    "parent": 0
+  },
+  {
+    "id": 90052518,
+    "name": "Governmental Actions and Policy",
+    "slug": "governmental-actions-and-policy",
+    "parent": 0
+  },
+  {
+    "id": 90052276,
+    "name": "Green Leaders",
+    "slug": "green-leaders",
+    "parent": 179
+  },
+  {
+    "id": 90052264,
+    "name": "Green.Org News",
+    "slug": "green-org-news",
+    "parent": 0
+  },
+  {
+    "id": 90052440,
+    "name": "Health",
+    "slug": "health",
+    "parent": 0
+  },
+  {
+    "id": 90052245,
+    "name": "Lifestyle",
+    "slug": "lifestyle",
+    "parent": 0
+  },
+  {
+    "id": 292,
+    "name": "Media",
+    "slug": "media",
+    "parent": 0
+  },
+  {
+    "id": 90052442,
+    "name": "Microplastics",
+    "slug": "microplastics",
+    "parent": 0
+  },
+  {
+    "id": 90052431,
+    "name": "Oceans and Currents",
+    "slug": "oceans-and-currents",
+    "parent": 0
+  },
+  {
+    "id": 90052300,
+    "name": "Person Of The Week",
+    "slug": "person-of-the-week",
+    "parent": 0
+  },
+  {
+    "id": 90052441,
+    "name": "Pollution",
+    "slug": "pollution",
+    "parent": 0
+  },
+  {
+    "id": 90052190,
+    "name": "Real Estate",
+    "slug": "real-estate",
+    "parent": 0
+  },
+  {
+    "id": 90052399,
+    "name": "Recycling",
+    "slug": "recycling",
+    "parent": 0
+  },
+  {
+    "id": 90052357,
+    "name": "Recycling and Waste Management",
+    "slug": "recycling-and-waste-management",
+    "parent": 0
+  },
+  {
+    "id": 90052364,
+    "name": "Smart Buildings",
+    "slug": "smart-buildings",
+    "parent": 0
+  },
+  {
+    "id": 90052355,
+    "name": "Solar Energy",
+    "slug": "solar-energy",
+    "parent": 0
+  },
+  {
+    "id": 90052202,
+    "name": "Space",
+    "slug": "space",
+    "parent": 0
+  },
+  {
+    "id": 90052413,
+    "name": "Sustainability Leaders",
+    "slug": "sustainability-leaders",
+    "parent": 0
+  },
+  {
+    "id": 318,
+    "name": "Tech",
+    "slug": "tech",
+    "parent": 0
+  },
+  {
+    "id": 2401,
+    "name": "Transportation",
+    "slug": "transportation",
+    "parent": 0
+  },
+  {
+    "id": 200,
+    "name": "Travel",
+    "slug": "travel",
+    "parent": 0
+  },
+  {
+    "id": 1,
+    "name": "Uncategorized",
+    "slug": "uncategorized",
+    "parent": 0
+  },
+  {
+    "id": 90052363,
+    "name": "Vertical Farms",
+    "slug": "vertical-farms",
+    "parent": 0
+  },
+  {
+    "id": 90052362,
+    "name": "Vertical Gardens",
+    "slug": "vertical-gardens",
+    "parent": 0
+  },
+  {
+    "id": 90052356,
+    "name": "Waste to Energy",
+    "slug": "waste-to-energy",
+    "parent": 0
+  },
+  {
+    "id": 90052359,
+    "name": "Wastewater Treatment",
+    "slug": "wastewater-treatment",
+    "parent": 0
+  },
+  {
+    "id": 90052508,
+    "name": "Water Scarcity",
+    "slug": "water-scarcity",
+    "parent": 0
+  },
+  {
+    "id": 90052360,
+    "name": "Wave and Tidal Energy",
+    "slug": "wave-and-tidal-energy",
+    "parent": 0
+  },
+  {
+    "id": 90052506,
+    "name": "Wind",
+    "slug": "wind",
+    "parent": 0
+  },
+  {
+    "id": 90052443,
+    "name": "Wind Energy",
+    "slug": "wind-energy",
+    "parent": 1212
+  }
+]

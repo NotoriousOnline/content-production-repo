@@ -3,6 +3,8 @@ import { config as articleTitleDiscoveryConfig } from "@/tools/article-title-dis
 import ArticleTitleDiscoveryTool from "@/tools/article-title-discovery/index";
 import { config as contentProductionConfig } from "@/tools/content-production/config";
 import ContentProductionTool from "@/tools/content-production/index";
+import { config as socialAutomationConfig } from "@/tools/social-automation/config";
+import SocialAutomationTool from "@/tools/social-automation/index";
 import { config as weedComContentProductionConfig } from "@/tools/weed-com-content-production/config";
 import WeedComContentProductionTool from "@/tools/weed-com-content-production/index";
 
@@ -32,12 +34,19 @@ export const tools: ToolConfig[] = [
     description: weedComContentProductionConfig.description,
     icon: weedComContentProductionConfig.icon,
   },
+  {
+    slug: socialAutomationConfig.slug,
+    name: socialAutomationConfig.name,
+    description: socialAutomationConfig.description,
+    icon: socialAutomationConfig.icon,
+  },
 ];
 
 const componentMap: Record<string, ComponentType> = {
   "article-title-discovery": ArticleTitleDiscoveryTool,
   "content-production": ContentProductionTool,
   "weed-com-content-production": WeedComContentProductionTool,
+  "social-automation": SocialAutomationTool,
 };
 
 export function getToolConfig(slug: string): ToolConfig | undefined {
