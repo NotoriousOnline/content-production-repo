@@ -34,6 +34,23 @@ export async function GET() {
       source = "inoreader";
       const sidLog = streamId.length > 90 ? `${streamId.slice(0, 90)}…` : streamId;
       console.log(`[fetch-articles] Inoreader stream "${sidLog}" → ${articles.length} articles`);
+      // Always merge recent RSS for freshness/source diversity (ENN/CNN/etc), then dedupe.
+      const rss = await fetchDiscoveryArticlesFromRss();
+      const merged = [...articles, ...rss];
+      const seenUrl = new Set<string>();
+      const seenTitle = new Set<string>();
+      const deduped: ArticleDiscoveryPayload[] = [];
+      for (const a of merged) {
+        const u = a.url.trim().toLowerCase();
+        const t = a.title.trim().toLowerCase();
+        if (!u || seenUrl.has(u) || seenTitle.has(t)) continue;
+        seenUrl.add(u);
+        seenTitle.add(t);
+        deduped.push(a);
+        if (deduped.length >= 20) break;
+      }
+      articles = deduped;
+      source = "inoreader+rss";
     } catch (err) {
       inoreaderError = err instanceof Error ? err.message : String(err);
       console.error("[fetch-articles] Inoreader failed:", inoreaderError);
