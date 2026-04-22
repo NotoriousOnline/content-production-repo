@@ -90,6 +90,7 @@ export function ContentProductionTool({
   const [contentAngle, setContentAngle] = useState("");
   const [productTypeForLinks, setProductTypeForLinks] = useState("");
   const [expertInsightCount, setExpertInsightCount] = useState<1 | 2 | 3>(3);
+  const [includeImportantNotice, setIncludeImportantNotice] = useState(false);
   const [wordCount, setWordCount] = useState(1500);
   const [generating, setGenerating] = useState(false);
   const [contentLoading, setContentLoading] = useState(false);
@@ -639,6 +640,7 @@ export function ContentProductionTool({
             ? { productTypeForLinks: productTypeForLinks.trim() }
             : {}),
           ...(showExpertInsightCountSelector ? { expertInsightCount } : {}),
+          ...(showExpertInsightCountSelector ? { includeImportantNotice } : {}),
         }),
       });
       const contentData = await contentRes.json();
@@ -744,6 +746,7 @@ export function ContentProductionTool({
             ? { productTypeForLinks: productTypeForLinks.trim() }
             : {}),
           ...(showExpertInsightCountSelector ? { expertInsightCount } : {}),
+          ...(showExpertInsightCountSelector ? { includeImportantNotice } : {}),
         }),
       });
       const contentData = (await contentRes.json()) as {
@@ -930,6 +933,7 @@ export function ContentProductionTool({
     setContentAngle("");
     setProductTypeForLinks("");
     setExpertInsightCount(3);
+    setIncludeImportantNotice(false);
     setGeneratedContent(null);
     setGeneratedImages(null);
     setInternalLinksUsed([]);
@@ -1496,6 +1500,19 @@ export function ContentProductionTool({
                   Generates exactly the selected number of Dr. Tabibi Expert Insight boxes.
                 </p>
               </div>
+            ) : null}
+            {showExpertInsightCountSelector ? (
+              <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-900">
+                <input
+                  type="checkbox"
+                  checked={includeImportantNotice}
+                  onChange={(e) => setIncludeImportantNotice(e.target.checked)}
+                  className="mt-0.5 rounded border-amber-300"
+                />
+                <span>
+                  Include the <strong>Important Notice</strong> block at the bottom of the article.
+                </span>
+              </label>
             ) : null}
             <button
               type="button"

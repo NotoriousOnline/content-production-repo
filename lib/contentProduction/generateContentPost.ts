@@ -45,6 +45,37 @@ function replaceEmDashes(html: string): string {
   return html.replace(/\u2014/g, " - ").replace(/\u2013/g, "-");
 }
 
+const WEED_IMPORTANT_NOTICE_HTML = `<div style="margin: 2rem 0; padding: 1.25rem 1.5rem; border-radius: 0.75rem; background-color: #fffbeb; border: 1px solid #f59e0b; font-family: Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+<p style="margin: 0 0 0.5rem; font-size: 0.875rem; font-weight: bold; color: #92400e; text-transform: uppercase; letter-spacing: 0.08em;">Important Notice</p>
+<p style="margin: 0; font-size: 0.9375rem; line-height: 1.6; color: #78350f;">Cannabis affects individuals differently. If you have a history of anxiety, panic disorder, or other mental health conditions, consult a qualified healthcare provider before using any cannabis product. This article is for informational purposes only and does not constitute medical advice. If you experience severe anxiety, chest pain, difficulty breathing, or feel you are in crisis, call 911 or go to your nearest emergency room immediately.</p>
+</div>
+<p style="font-family: Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; font-size: 0.875rem; line-height: 1.6; color: #64748b; margin: 2rem 0 0; padding-top: 1.25rem; border-top: 1px solid #e2e8f0;">For adults 21+ only. Cannabis laws vary by state. This content is intended for informational purposes only and does not constitute medical or legal advice. If you are experiencing a medical emergency, call 911 or go to your nearest emergency room immediately.</p>`;
+
+function appendWeedImportantNoticeIfRequested(html: string, enabled: boolean): string {
+  if (!enabled) return html;
+  if (/Important Notice/i.test(html) && /Cannabis affects individuals differently/i.test(html)) return html;
+  return `${html.trimEnd()}\n\n${WEED_IMPORTANT_NOTICE_HTML}`;
+}
+
+/**
+ * Remove ad-hoc in-body "Important Notice" inserts so we only keep the canonical
+ * bottom notice configured in this tool.
+ */
+function stripInBodyImportantNotice(html: string): string {
+  let out = html;
+  // Remove any div block explicitly labeled "Important Notice".
+  out = out.replace(
+    /<div\b[^>]*>[\s\S]*?<p\b[^>]*>\s*Important Notice\s*<\/p>[\s\S]*?<\/div>/gi,
+    ""
+  );
+  // Remove the specific middle paragraph variant that was appearing in drafts.
+  out = out.replace(
+    /<p\b[^>]*>\s*THC gummies are not a substitute for medical care\.[\s\S]*?does not constitute medical advice\.\s*<\/p>/gi,
+    ""
+  );
+  return out.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /** HTML + inline styles use more tokens than plain text; cap at Anthropic output limit. */
 const ANTHROPIC_MAX_OUTPUT_TOKENS = 8192;
 
@@ -120,7 +151,7 @@ The user message has TITLE, KEYWORDS, and the TAIL of an article that stopped be
 Output ONLY the continuation to append (do not repeat earlier paragraphs):
 1) If the tail ends inside an open <p> without </p>, write the minimal words to finish the sentence, then </p>.
 2) Then append FAQ (Bible outer div with Inter font-family, <h2>Frequently asked questions</h2>, then each <h3> + <p>) + amber disclaimer when relevant + legal footer only. Do NOT add a Sources HTML block (the server appends Sources from the Tabibi JSON). Amber box, FAQ wrapper, and footer: Bible inline style= templates with Inter for all text; copy style attributes exactly.
-3) 4-7 FAQ pairs; answers ~28-52 words each.
+3) Exactly 5 FAQ pairs; answers ~24-45 words each (concise, relevant, practical).
 4) Legal footer: REQUIRED — must include verbatim "For adults 21+ only. Cannabis laws vary by state." plus 911/emergency room routing in the Bible <p> template. Never omit the legal footer.`;
 
 async function finalizeWeedLearnHtml(
@@ -295,7 +326,7 @@ Visual: clean editorial layout — Inter for all text, headings, and styled bloc
 
 FAQ RULES (required for every Weed.com Learn article — never omit)
 - The HTML MUST include the FAQ wrapper with inline styles below (outer div with margin:2.5rem and h2 "Frequently asked questions"). Mandatory block.
-- 4 to 7 FAQs. Questions mirror real search phrasing. Each answer ~28-52 words. Question and answer use the same font weight (readable, not heavy marketing bold on questions).
+- Exactly 5 FAQs. Questions mirror real search phrasing. Each answer ~24-45 words (clear, useful, concise). Question and answer use the same font weight (readable, not heavy marketing bold on questions).
 - Template — copy style attributes verbatim per item:
 
 <div style="margin:2.5rem 0 0;padding:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
@@ -372,6 +403,7 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
       expertInsightCountRaw <= 3
         ? expertInsightCountRaw
         : undefined;
+    const includeImportantNotice = bodyRecord.includeImportantNotice === true;
 
     const refinementInstructions =
       typeof bodyRecord.refinementInstructions === "string" ? bodyRecord.refinementInstructions.trim() : "";
@@ -494,9 +526,9 @@ Typography: Never use the em dash character (Unicode U+2014). Do not type "—".
 semicolons, parentheses, or a spaced hyphen " - " instead when you need a pause or aside.
 
 Structure: Near the end, include FAQs before Sources/footer:
-${
+${ 
   toolScope === WP_TOOL_SCOPE.weedComContentProduction
-    ? `- Weed.com Learn article foot order: FAQ block (Bible wrapper with Inter; <h2> Frequently asked questions, <h3> + <p> per item) → amber drug-interaction disclaimer (Bible template with ⚕) when meds/interactions are relevant → Sources with full formatted citations and PMID links for cited papers → legal footer with exact opening "For adults 21+ only. Cannabis laws vary by state." plus 911/ER sentence (hard requirement; never omit). All text, headings, and blocks use Inter per Bible. Keep FAQ answers short (Bible word range) so the full post completes in one response, never truncated.`
+    ? `- Weed.com Learn article foot order: FAQ block (Bible wrapper with Inter; <h2> Frequently asked questions, <h3> + <p> per item) → amber drug-interaction disclaimer (Bible template with ⚕) when meds/interactions are relevant → Sources with full formatted citations and PMID links for cited papers → legal footer with exact opening "For adults 21+ only. Cannabis laws vary by state." plus 911/ER sentence (hard requirement; never omit). All text, headings, and blocks use Inter per Bible. FAQ count must be exactly 5; each answer should be concise and useful (roughly 24-45 words).`
     : `- One <h2> for the FAQ block (e.g. "Frequently asked questions" or a topic-specific label).
 - Either ONE set of questions (each question is an <h3>, answer in <p> and/or <ul><li> bullets
   when several points apply), OR TWO thematic <h3> subsections when the topic clearly splits
@@ -553,6 +585,10 @@ ${productBlock}`;
     const productBrief = productHint
       ? `Product type focus: still include **at least one editorial post/page link** from the editorial list (1–3 total editorial links). Separately, include 1–2 relevant **product** internal links when they fit. The candidate list favors products matching: "${productHint}". Introduce each product with a short editorial setup (why this example fits the section) so it reads as a recommendation in context, not a sudden plug. If the list is thin, sync product links in Site manager.`
       : "";
+    const weedProductVariationInstruction =
+      toolScope === WP_TOOL_SCOPE.weedComContentProduction
+        ? `\n\nProduct selection rule: when multiple relevant product URLs are available, prefer priority brands (Binoid, Bloomz, Hometown Hero, Blazed, Cookies) but vary picks across articles instead of repeating the same product URLs each time.`
+        : "";
     const briefExtra = [sheetBrief, angleBrief, productBrief].filter(Boolean).join("\n\n");
 
     const tabibiForArticle =
@@ -574,26 +610,32 @@ ${productBlock}`;
       toolScope === WP_TOOL_SCOPE.weedComContentProduction && typeof expertInsightCount === "number"
         ? `\n\nExpert Insight count requirement: include exactly ${expertInsightCount} Dr. Alexander Tabibi Expert Insight block${expertInsightCount === 1 ? "" : "s"} in the article body.`
         : "";
+    const weedFaqCountInstruction =
+      toolScope === WP_TOOL_SCOPE.weedComContentProduction
+        ? `\n\nFAQ requirement: include exactly 5 relevant FAQs. Keep each answer concise (around 24-45 words), not too short and not too long.`
+        : "";
     const wordCountInstruction = `\n\nWord count requirement: target ${wordCount} visible words (exclude HTML tags). Keep final output in ${wordCountBounds(wordCount).min}-${wordCountBounds(wordCount).max}.`;
 
     const initialDraftUserMessage = `Title: ${title}
 
-Keywords: ${keywords.join(", ")}${briefExtra ? `\n\n${briefExtra}` : ""}
+Keywords: ${keywords.join(", ")}${briefExtra ? `\n\n${briefExtra}` : ""}${weedProductVariationInstruction}
 
 Internal link candidates (editorial: pick 1–3 post/page URLs for in-body <a> links—required when the editorial list is non-empty; products: separate Shop Now / commerce usage; each URL at most once):
 ${linksText}${tabibiLibraryBlock}
 ${weedExpertInsightCountInstruction}
+${weedFaqCountInstruction}
 ${wordCountInstruction}
 
 Write the full HTML blog post.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? "" : " Include the FAQ block as specified (1 or 2 FAQ subsections by topic fit, bullets in answers where it helps)."} Remember: no em dash character anywhere in the HTML. Do not output an <h1>; the post title is set only in WordPress. Start with <p> or <h2>.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? ` Body, FAQ, cards, footers: Inter-led font stack per Bible. Expert Insight (.expert-box): every opening tag in that block must include font-family:Inter,sans-serif!important (including PMID <a>) so paste/theme cannot override. FAQ: Bible outer wrapper + <h2>Frequently asked questions</h2> + <h3>/<p> pairs. Double-check every internal link: when the Editorial posts and pages list is non-empty, include at least one and up to three <a> links to those post/page URLs in the main body (most relevant first); Shop Now product blocks are separate and do not satisfy the editorial link requirement. Anchor text must be specific (never rely on 'this guide' / 'this breakdown' style phrasing). Product names must follow a clear contextual lead-in. Do not force the primary keyword into the opening of the first paragraph or into headings. Before finalizing: run Contentenator on every Expert Insight box (Bible v7) — study-type labels match the PubMed record type; each PMID matches that paper (no unrelated or fabricated IDs); specific numeric or outcome claims trace to that same PMID, not a different paper or a review-only mention of another study. At most 3 PubMed citations total; PMIDs only in Expert Insight expert-cite lines; each must use a verified PMID article URL (https://pubmed.ncbi.nlm.nih.gov/<digits>/) — never PubMed ?term= search links — with author/journal/year in adjacent text. Do not output a Sources HTML block: the server appends Sources using only PMIDs cited in Expert Insight expert-cite lines (no additional PMIDs). Every Dr. Tabibi Expert Insight block and every product card must use the Bible templates with full inline style=\"...\" attributes (WordPress will not load custom CSS for these). When medication interactions are relevant, include the amber drug-interaction disclaimer box (⚕ icon) from the Bible. End with the legal footer only — required verbatim opening \"For adults 21+ only. Cannabis laws vary by state.\" plus emergency routing; never omit. The article must end completely — never stop mid-sentence.` : ""}`;
 
     const refinementUserMessage = `Title: ${title}
 
-Keywords: ${keywords.join(", ")}${briefExtra ? `\n\n${briefExtra}` : ""}
+Keywords: ${keywords.join(", ")}${briefExtra ? `\n\n${briefExtra}` : ""}${weedProductVariationInstruction}
 
 Internal link candidates (use only these URLs when adding or changing links):
 ${linksText}${tabibiLibraryBlock}
 ${weedExpertInsightCountInstruction}
+${weedFaqCountInstruction}
 ${wordCountInstruction}
 
 ----- EXISTING HTML -----
@@ -626,6 +668,8 @@ Output the complete revised HTML only. No markdown code fences.`;
       if (tabibiForArticle.length > 0) {
         content = appendTabibiSourcesFooter(content, tabibiForArticle);
       }
+      content = stripInBodyImportantNotice(content);
+      content = appendWeedImportantNoticeIfRequested(content, includeImportantNotice);
     }
     const tabibiSourcesPicked: TabibiPmidEntry[] =
       toolScope === WP_TOOL_SCOPE.weedComContentProduction && tabibiForArticle.length > 0

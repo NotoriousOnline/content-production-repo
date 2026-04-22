@@ -68,6 +68,15 @@ function scoreTextAgainstPhrases(text: string, phrases: string[]): number {
   return score;
 }
 
+function stableSeed(text: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
 /** Title + keywords + short excerpt/slug string. */
 function scoreRow(
   row: { title: string; slug: string | null; excerpt: string | null; search_text: string | null },
@@ -247,8 +256,14 @@ export function pickLinkCandidatesWithProductBias(
         return { r, score: base + hintBoost };
       });
       scored.sort((a, b) => b.score - a.score);
+      // Rotate within the strongest candidates so similar briefs don't always get the exact same products.
+      // Keeps relevance/brand priority while reducing repeats across multiple articles.
+      const eliteWindow = Math.min(scored.length, Math.max(productSlotCount * 4, 8));
+      const seedInput = `${articleTitle}::${keywords.join("|")}::${hint ?? ""}`;
+      const start = eliteWindow > 0 ? stableSeed(seedInput) % eliteWindow : 0;
       let pAdded = 0;
-      for (const { r } of scored) {
+      for (let i = 0; i < scored.length && pAdded < productSlotCount; i++) {
+        const { r } = scored[(start + i) % scored.length];
         if (pAdded >= productSlotCount) break;
         if (pushCandidate(out, seen, r, "product")) pAdded += 1;
       }
