@@ -559,7 +559,7 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
     const siteOrigin = (site.url ?? "").replace(/\/$/, "");
     const isWeed = toolScope === WP_TOOL_SCOPE.weedComContentProduction;
     const linkLibraryOpts = {
-      minPostPageSlots: (isWeed ? 3 : 1) as const,
+      minPostPageSlots: isWeed ? 3 : 1,
       maxPostPageSlots: 3 as const,
       ...(siteOrigin ? { siteOriginForProductImages: siteOrigin } : {}),
     };
