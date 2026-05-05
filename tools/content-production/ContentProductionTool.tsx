@@ -90,6 +90,7 @@ export function ContentProductionTool({
   const [contentAngle, setContentAngle] = useState("");
   const [productTypeForLinks, setProductTypeForLinks] = useState("");
   const [expertInsightCount, setExpertInsightCount] = useState<1 | 2 | 3>(3);
+  const [faqCount, setFaqCount] = useState<3 | 4 | 5>(5);
   const [includeImportantNotice, setIncludeImportantNotice] = useState(false);
   const [wordCount, setWordCount] = useState(1500);
   const [generating, setGenerating] = useState(false);
@@ -640,6 +641,7 @@ export function ContentProductionTool({
             ? { productTypeForLinks: productTypeForLinks.trim() }
             : {}),
           ...(showExpertInsightCountSelector ? { expertInsightCount } : {}),
+          ...(showExpertInsightCountSelector ? { faqCount } : {}),
           ...(showExpertInsightCountSelector ? { includeImportantNotice } : {}),
         }),
       });
@@ -661,6 +663,7 @@ export function ContentProductionTool({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          siteId: selectedSite.id,
           title: title.trim(),
           keywords,
           content: contentData.content,
@@ -746,6 +749,7 @@ export function ContentProductionTool({
             ? { productTypeForLinks: productTypeForLinks.trim() }
             : {}),
           ...(showExpertInsightCountSelector ? { expertInsightCount } : {}),
+          ...(showExpertInsightCountSelector ? { faqCount } : {}),
           ...(showExpertInsightCountSelector ? { includeImportantNotice } : {}),
         }),
       });
@@ -788,6 +792,7 @@ export function ContentProductionTool({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          siteId: selectedSite?.id,
           title: title.trim(),
           keywords,
           content,
@@ -830,7 +835,7 @@ export function ContentProductionTool({
       setImagesLoading(false);
       setImagesError(err instanceof Error ? err.message : "Image generation failed. Try again.");
     }
-  }, [approvedContent, generatedContent, title, keywords, wordCount]);
+  }, [approvedContent, generatedContent, selectedSite?.id, title, keywords, wordCount]);
 
   const section2Unlocked = contentLoading || contentRefining || !!generatedContent;
   const hasContent = !!generatedContent || !!contentApproved;
@@ -874,7 +879,7 @@ export function ContentProductionTool({
         const res = await fetch(`${api}/generate-images/single`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({ prompt, siteId: selectedSite?.id }),
         });
         const data = (await res.json().catch(() => ({}))) as { base64?: string; mimeType?: string; error?: string };
         const newBase64 = data.base64;
@@ -899,7 +904,7 @@ export function ContentProductionTool({
         setRegeneratingIndex(null);
       }
     },
-    [api, generatedImages]
+    [api, generatedImages, selectedSite?.id]
   );
 
   const toggleRegeneratePanel = useCallback((idx: number) => {
@@ -933,6 +938,7 @@ export function ContentProductionTool({
     setContentAngle("");
     setProductTypeForLinks("");
     setExpertInsightCount(3);
+    setFaqCount(5);
     setIncludeImportantNotice(false);
     setGeneratedContent(null);
     setGeneratedImages(null);
@@ -1449,7 +1455,7 @@ export function ContentProductionTool({
             <div>
               <label className="mb-2 block text-xs text-slate-500">Word count</label>
               <div className="flex gap-2">
-                {[1500, 2000, 3000].map((n) => (
+                {[1500, 2000, 2500, 3000].map((n) => (
                   <label
                     key={n}
                     className={`flex cursor-pointer items-center rounded-lg border px-4 py-2 text-sm transition-colors ${
@@ -1498,6 +1504,36 @@ export function ContentProductionTool({
                 </div>
                 <p className="mt-1 text-xs text-slate-500">
                   Generates exactly the selected number of Dr. Tabibi Expert Insight boxes.
+                </p>
+              </div>
+            ) : null}
+            {showExpertInsightCountSelector ? (
+              <div>
+                <label className="mb-2 block text-xs text-slate-500">FAQ count</label>
+                <div className="flex gap-2">
+                  {[3, 4, 5].map((n) => (
+                    <label
+                      key={n}
+                      className={`flex cursor-pointer items-center rounded-lg border px-4 py-2 text-sm transition-colors ${
+                        faqCount === n
+                          ? "border-teal-500 bg-teal-50 text-teal-700"
+                          : "border-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="faqCount"
+                        value={n}
+                        checked={faqCount === n}
+                        onChange={() => setFaqCount(n as 3 | 4 | 5)}
+                        className="sr-only"
+                      />
+                      {n}
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  Generates exactly the selected number of FAQs.
                 </p>
               </div>
             ) : null}

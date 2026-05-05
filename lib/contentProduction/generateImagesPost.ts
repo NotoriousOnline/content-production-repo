@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { callClaude } from "@/lib/anthropic";
 import { errorMessage, serverLog } from "@/lib/serverLog";
 import { generateImage, httpStatusForImageGenerationError } from "@/lib/geminiClient";
-import { WP_TOOL_SCOPE, type WPToolScope } from "@/lib/wpSites";
+import { isPrefabSite } from "@/lib/contentProduction/greenOrgCategoryPicker";
+import { getSiteById, WP_TOOL_SCOPE, type WPToolScope } from "@/lib/wpSites";
 
 /** Featured + in-content article images only (Shop Now product thumbnails are separate HTML). */
 const STYLE_GUIDELINE =
@@ -84,7 +85,7 @@ type GeneratedImagePayload = {
 export async function postGenerateImages(request: Request, toolScope: WPToolScope) {
   try {
     const body = await request.json();
-    const { title, keywords, content, wordCount } = body;
+    const { title, keywords, content, wordCount, siteId } = body;
 
     if (!title || !Array.isArray(keywords) || !content || typeof wordCount !== "number") {
       return NextResponse.json(
@@ -92,6 +93,9 @@ export async function postGenerateImages(request: Request, toolScope: WPToolScop
         { status: 400 }
       );
     }
+    const site =
+      typeof siteId === "string" && siteId.trim().length > 0 ? await getSiteById(siteId, toolScope) : null;
+    const prefabSite = site != null && isPrefabSite(site);
 
     const allSections = extractH2SectionsWithContext(content);
     const candidates = placementCandidates(allSections);
@@ -105,9 +109,12 @@ export async function postGenerateImages(request: Request, toolScope: WPToolScop
       .join("\n\n");
 
     const weedExtra = toolScope === WP_TOOL_SCOPE.weedComContentProduction ? WEED_IMAGE_ADDENDUM : "";
+    const prefabAspectExtra = prefabSite
+      ? "\nPrefab.com: prefer a less-rectangular composition (roughly 1200x850 feel, around 4:3-ish) instead of extra-wide banners."
+      : "";
 
     const systemPrompt = `You generate image briefs for a blog article. Return ONLY valid JSON, no markdown.
-Style for every imagePrompt: "${STYLE_GUIDELINE}" (append this intent inside each imagePrompt string).${weedExtra}
+Style for every imagePrompt: "${STYLE_GUIDELINE}" (append this intent inside each imagePrompt string).${weedExtra}${prefabAspectExtra}
 
 Return JSON shape:
 {
@@ -225,7 +232,7 @@ Target: 1 featured + ${inContentTarget} in-content images.`;
     const results: GeneratedImagePayload[] = [];
 
     for (const item of promptsToGenerate) {
-      const { base64, mimeType } = await generateImage(item.prompt, { aspectRatio: "16:9" });
+      const { base64, mimeType } = await generateImage(item.prompt, { aspectRatio: prefabSite ? "4:3" : "16:9" });
       results.push({
         type: item.type,
         index: item.index,

@@ -17,6 +17,61 @@ export function isGreenOrgSite(site: WPSite): boolean {
   }
 }
 
+/** True when this site is the prefab site (content-production publishing). */
+export function isPrefabSite(site: WPSite): boolean {
+  const raw = (site.url ?? "").trim();
+  if (!raw) return false;
+  try {
+    const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    const host = u.hostname.toLowerCase();
+    return host === "prefab.com" || host.endsWith(".prefab.com");
+  } catch {
+    return /prefab/i.test(raw);
+  }
+}
+
+/**
+ * Canonical prefab category names provided by editorial.
+ * Matching is case-insensitive and ignores extra spaces.
+ */
+export const PREFAB_CATEGORY_NAMES: readonly string[] = [
+  "ADUs (Super-Cluster)",
+  "ADU Financing & Economics",
+  "California-Specific ADUs",
+  "General ADU Knowledge",
+  "Brands & Builders",
+  "Brand Comparisons",
+  "Company Profiles",
+  "Case Studies & Inspiration",
+  "Construction & Regulations",
+  "Design & Lifestyle",
+  "Financing & Costs",
+  "Prefab & ADU Reviews",
+  "Prefab Basics",
+  "Prefab Construction Reality",
+  "Prefab in California",
+  "Prefab Living & Ownership",
+  "Resources",
+];
+
+function normalizeCategoryName(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Filters WordPress categories to a canonical name list.
+ * Falls back to the original list when no preferred names are found on the site.
+ */
+export function restrictCategoriesToNames(
+  categories: WPCategoryRow[],
+  preferredNames: readonly string[]
+): WPCategoryRow[] {
+  if (categories.length === 0 || preferredNames.length === 0) return categories;
+  const allowed = new Set(preferredNames.map(normalizeCategoryName));
+  const picked = categories.filter((c) => allowed.has(normalizeCategoryName(c.name)));
+  return picked.length > 0 ? picked : categories;
+}
+
 function snapshotCategories(): WPCategoryRow[] {
   const raw = greenorgCategoriesSnapshot as unknown;
   if (!Array.isArray(raw)) return [];
