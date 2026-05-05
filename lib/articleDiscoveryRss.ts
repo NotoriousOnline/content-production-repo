@@ -121,14 +121,14 @@ function parseEnnHtmlArticles(html: string, source: string): DiscoveryArticle[] 
     }
   }
   const out: DiscoveryArticle[] = [];
-  for (const [url, title] of byUrl) {
+  byUrl.forEach((title, url) => {
     out.push({
       title: title || titleFromEnnArticleUrl(url),
       url,
       source,
       pubDate: "",
     });
-  }
+  });
   return out.slice(0, 40);
 }
 
