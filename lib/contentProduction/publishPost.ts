@@ -5,6 +5,9 @@ import {
   categoriesForGreenOrgPublish,
   pickGreenOrgCategoryIds,
   isGreenOrgSite,
+  isPrefabSite,
+  PREFAB_CATEGORY_NAMES,
+  restrictCategoriesToNames,
 } from "@/lib/contentProduction/greenOrgCategoryPicker";
 import {
   createPost,
@@ -81,30 +84,26 @@ const EDITORIAL_FIGURE_STYLE =
 const EDITORIAL_IMG_STYLE =
   "width:100%;max-width:100%;height:auto;display:block;border-radius:0.375rem;";
 
-function editorialArticleFigureHtml(imageUrl: string, alt: string): string {
-  return `<figure class="wp-block-image weed-learn-editorial-image" style="${EDITORIAL_FIGURE_STYLE}"><img src="${escapeHtmlAttr(imageUrl)}" alt="${escapeHtmlAttr(alt)}" style="${EDITORIAL_IMG_STYLE}" width="1200" height="675" loading="lazy" decoding="async" /></figure>`;
-}
-
-/** Featured image at top of body HTML (in addition to WordPress featured_media). */
-function prependFeaturedImageToBody(html: string, imageUrl: string, alt: string): string {
-  const trimmed = html.trimStart();
-  const head = trimmed.slice(0, 1200);
-  if (/^<figure/i.test(trimmed) && head.includes(imageUrl)) {
-    return html;
-  }
-  return `${editorialArticleFigureHtml(imageUrl, alt)}\n\n${trimmed}`;
+function editorialArticleFigureHtml(imageUrl: string, alt: string, dims?: { width: number; height: number }): string {
+  const width = dims?.width ?? 1200;
+  const height = dims?.height ?? 675;
+  return `<figure class="wp-block-image weed-learn-editorial-image" style="${EDITORIAL_FIGURE_STYLE}"><img src="${escapeHtmlAttr(imageUrl)}" alt="${escapeHtmlAttr(alt)}" style="${EDITORIAL_IMG_STYLE}" width="${width}" height="${height}" loading="lazy" decoding="async" /></figure>`;
 }
 
 type InContentPlacement = { url: string; alt: string; h2Index: number; order: number };
 
-function injectInContentImages(html: string, placements: InContentPlacement[]): string {
+function injectInContentImages(
+  html: string,
+  placements: InContentPlacement[],
+  dims?: { width: number; height: number }
+): string {
   if (placements.length === 0) return html;
 
   const insertions: { pos: number; order: number; html: string }[] = [];
   for (const p of placements) {
     const pos = findH2EndPositionByIndex(html, p.h2Index);
     if (pos == null) continue;
-    const imgHtml = editorialArticleFigureHtml(p.url, p.alt);
+    const imgHtml = editorialArticleFigureHtml(p.url, p.alt, dims);
     insertions.push({ pos, order: p.order, html: imgHtml });
   }
 
@@ -194,6 +193,25 @@ function appendReferenceDisclaimer(html: string, referenceUrlRaw: unknown): stri
   return `${html.trimEnd()}\n\n${footer}`;
 }
 
+/** Weed.com commerce cards: force Shop Now links to open in a new tab. */
+function enforceShopNowLinksOpenInNewTab(html: string): string {
+  return html.replace(/<a\b([^>]*?)>\s*Shop Now\s*→\s*<\/a>/gi, (full, attrs: string) => {
+    let next = attrs;
+    if (!/\btarget\s*=/i.test(next)) next += ` target="_blank"`;
+    if (!/\brel\s*=/i.test(next)) {
+      next += ` rel="noopener noreferrer"`;
+    } else {
+      next = next.replace(/\brel\s*=\s*"([^"]*)"/i, (_m, relValue: string) => {
+        const rels = new Set(relValue.split(/\s+/).filter(Boolean).map((x) => x.toLowerCase()));
+        rels.add("noopener");
+        rels.add("noreferrer");
+        return `rel="${Array.from(rels).join(" ")}"`;
+      });
+    }
+    return `<a${next}>Shop Now →</a>`;
+  });
+}
+
 export async function postPublish(request: Request, toolScope: WPToolScope) {
   try {
     const raw = await request.text();
@@ -249,9 +267,6 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
       .sort((a, b) => a.index - b.index);
 
     let featuredMediaId: number | undefined;
-    let featuredImageUrlForBody: string | undefined;
-    let featuredImageAltForBody: string | undefined;
-
     const rankMathFocusKw =
       toolScope === WP_TOOL_SCOPE.weedComContentProduction
         ? rankMathFocusKeywordFromTitle(title, keywords)
@@ -261,24 +276,18 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
     if (featuredImg) {
       if (isPreUploaded(featuredImg)) {
         featuredMediaId = featuredImg.mediaId;
-        featuredImageUrlForBody = featuredImg.url;
-        featuredImageAltForBody = ensureFeaturedAltIncludesKeyword(
-          featuredImg.altText ?? title.slice(0, 125),
-          focuskwForAlt
-        );
       } else if ("base64" in featuredImg && featuredImg.base64) {
         const buf = Buffer.from(featuredImg.base64, "base64");
         const { buffer, mimeType, ext } = await compressImageForUpload(buf, featuredImg.mimeType ?? "image/png");
         const slug = (featuredImg.fileSlug ?? "featured").replace(/[^a-z0-9-]/gi, "-").slice(0, 60);
         const { id, url } = await uploadMedia(site, buffer, `${slug}.${ext}`, mimeType);
         featuredMediaId = id;
-        featuredImageUrlForBody = url;
-        featuredImageAltForBody = ensureFeaturedAltIncludesKeyword(
+        const featuredImageAlt = ensureFeaturedAltIncludesKeyword(
           featuredImg.altText ?? title.slice(0, 125),
           focuskwForAlt
         );
         await updateMediaDetails(site, id, {
-          alt_text: featuredImageAltForBody,
+          alt_text: featuredImageAlt,
           title: slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
         });
       }
@@ -319,18 +328,16 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
     }
 
     let bodyHtml = stripLeadingPostTitleH1(typeof content === "string" ? content : "");
+    const prefabSite = isPrefabSite(site);
+    const articleImageDims = prefabSite ? { width: 1200, height: 850 } : undefined;
     if (toolScope === WP_TOOL_SCOPE.weedComContentProduction) {
       bodyHtml = lockExpertBoxTypography(bodyHtml);
     }
-    const prependFeaturedFigureInBody = toolScope !== WP_TOOL_SCOPE.weedComContentProduction;
-    const withFeaturedAtStart =
-      prependFeaturedFigureInBody &&
-      featuredImageUrlForBody != null &&
-      featuredImageUrlForBody.trim() !== ""
-        ? prependFeaturedImageToBody(bodyHtml, featuredImageUrlForBody.trim(), featuredImageAltForBody ?? title.slice(0, 125))
-        : bodyHtml;
-    const withImages = injectInContentImages(withFeaturedAtStart, placements);
-    const finalContent = appendReferenceDisclaimer(withImages, referenceUrl);
+    const withImages = injectInContentImages(bodyHtml, placements, articleImageDims);
+    let finalContent = appendReferenceDisclaimer(withImages, referenceUrl);
+    if (toolScope === WP_TOOL_SCOPE.weedComContentProduction) {
+      finalContent = enforceShopNowLinksOpenInNewTab(finalContent);
+    }
     const taxonomyOpts: { categories?: number[]; tags?: number[] } = {};
     let greenOrgCategoryIds: number[] | undefined;
     if (toolScope === WP_TOOL_SCOPE.weedComContentProduction) {
@@ -341,22 +348,25 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
         console.warn('[publish] Could not resolve category "learn"; publishing without category assignment.');
       }
       taxonomyOpts.tags = [4337];
-    } else if (toolScope === WP_TOOL_SCOPE.contentProduction && isGreenOrgSite(site)) {
+    } else if (toolScope === WP_TOOL_SCOPE.contentProduction && (isGreenOrgSite(site) || isPrefabSite(site))) {
       const wpCategories = await categoriesForGreenOrgPublish(() => listAllCategories(site));
       if (wpCategories.length > 0) {
+        const constrainedCategories = isPrefabSite(site)
+          ? restrictCategoriesToNames(wpCategories, PREFAB_CATEGORY_NAMES)
+          : wpCategories;
         greenOrgCategoryIds = await pickGreenOrgCategoryIds({
           title,
           keywords,
           articleHtml: finalContent,
-          categories: wpCategories,
+          categories: constrainedCategories,
         });
         if (greenOrgCategoryIds.length > 0) {
           taxonomyOpts.categories = greenOrgCategoryIds;
         } else {
-          console.warn("[publish] Green.org: no category ids chosen; publishing without category assignment.");
+          console.warn(`[publish] ${isPrefabSite(site) ? "Prefab" : "Green.org"}: no category ids chosen; publishing without category assignment.`);
         }
       } else {
-        console.warn("[publish] Green.org: no categories available (REST and snapshot empty).");
+        console.warn(`[publish] ${isPrefabSite(site) ? "Prefab" : "Green.org"}: no categories available (REST and snapshot empty).`);
       }
     }
     const { id: postId, link, editUrl, status } =
@@ -372,7 +382,7 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
 
     let yoastMetaOk: boolean | undefined;
     let rankMathOk: boolean | undefined;
-    if (toolScope === WP_TOOL_SCOPE.contentProduction && isGreenOrgSite(site)) {
+    if (toolScope === WP_TOOL_SCOPE.contentProduction && (isGreenOrgSite(site) || isPrefabSite(site))) {
       yoastMetaOk = await updatePostYoastMeta(site, postId, {
         metadesc,
         focuskw: rankMathFocusKw,

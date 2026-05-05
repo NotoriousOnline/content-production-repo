@@ -23,7 +23,7 @@ import { fetchAllProductsForLinkLibrary, getPosts } from "@/lib/wordpressClient"
 /** Richer pool for the model + Supabase library when synced. */
 const INTERNAL_LINK_CANDIDATES_FOR_PROMPT = 14;
 const LIBRARY_USE_MIN = 3;
-const ALLOWED_WORD_COUNTS = new Set([1500, 2000, 3000]);
+const ALLOWED_WORD_COUNTS = new Set([1500, 2000, 2500, 3000]);
 const WORD_COUNT_TOLERANCE_RATIO = 0.08;
 
 /** Max characters of existing HTML accepted for refinement (existingHtml + refinementInstructions). */
@@ -151,7 +151,7 @@ The user message has TITLE, KEYWORDS, and the TAIL of an article that stopped be
 Output ONLY the continuation to append (do not repeat earlier paragraphs):
 1) If the tail ends inside an open <p> without </p>, write the minimal words to finish the sentence, then </p>.
 2) Then append FAQ (Bible outer div with Inter font-family, <h2>Frequently asked questions</h2>, then each <h3> + <p>) + amber disclaimer when relevant + legal footer only. Do NOT add a Sources HTML block (the server appends Sources from the Tabibi JSON). Amber box, FAQ wrapper, and footer: Bible inline style= templates with Inter for all text; copy style attributes exactly.
-3) Exactly 5 FAQ pairs; answers ~24-45 words each (concise, relevant, practical).
+3) 3 to 5 FAQ pairs (exact count will be specified by caller); answers ~24-45 words each (concise, relevant, practical).
 4) Legal footer: REQUIRED — must include verbatim "For adults 21+ only. Cannabis laws vary by state." plus 911/emergency room routing in the Bible <p> template. Never omit the legal footer.`;
 
 async function finalizeWeedLearnHtml(
@@ -209,6 +209,111 @@ Product mentions and editorial commerce: When citing a specific product or brand
 Partner product priority: When the topic supports a commerce example, prefer Shop Now blocks for products from these brands when they appear in the internal link list: Binoid, Bloomz, Hometown Hero, Blazed, Cookies, and products sourced from Binoid or Blazed warehouses when catalog copy or URLs indicate that. Still only use links from the candidate list; do not invent URLs.
 
 Layer 1 Expert Insight / YMYL (Contentenator): Before final output, enforce internal consistency on every Dr. Tabibi Expert Insight box — (1) study-type wording matches the PubMed record type (trial vs review vs meta-analysis, etc.), (2) every PMID is real and matches the cited paper (no fabricated or unrelated IDs), (3) specific claims trace to that same PMID, not to a primary study only mentioned inside a cited review. This gate is required before Layer 2 (human / Dr. Tabibi) review.`;
+  }
+  return "";
+}
+
+function isGardenSiteUrl(rawUrl: string): boolean {
+  const raw = rawUrl.trim();
+  if (!raw) return false;
+  try {
+    const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    const host = u.hostname.toLowerCase();
+    return host === "garden.com" || host.endsWith(".garden.com");
+  } catch {
+    return /garden\.com/i.test(raw);
+  }
+}
+
+function gardenComLayerPrompt(siteUrl: string): string {
+  if (!isGardenSiteUrl(siteUrl)) return "";
+  return `
+
+GARDEN.COM CONTENTENATOR CONTEXT (Site Bible v4sm, April 2026) — apply to this article.
+
+Brand identity and voice:
+- Garden.com tone is specific, evidence-led, and useful. Never vague, salesy, or lifestyle-blog filler.
+- Every practical care instruction must include a measurable detail (depth, unit, timeframe, or named cause).
+- Use professional, accessible horticultural language. Do not use unattributed claims like "some gardeners say".
+
+Evidence and citation requirements:
+- Use primary horticultural authorities (RHS, Kew, ASPCA, NHS, or peer-reviewed sources) for factual claims.
+- Include a Sources section at the article foot with live URLs for major claims.
+- If a claim or citation is uncertain, keep the claim conservative and mark it with [VERIFY].
+
+YMYL and safety guardrails:
+- For toxicity, pet safety, or diagnostic safety content: add an amber warning/disclaimer near the top.
+- For pet-ingestion emergency context, explicitly route to vet / ASPCA Poison Control (888-426-4435) immediately.
+- Do not guess toxicity classification when uncertain; prefer "unknown" + professional escalation.
+
+Formatting and style:
+- Use locale-aware spelling from brief context (UK for EN-GB, US for EN-US). If locale is not provided, default to UK spelling.
+- For temperature and care ranges, include both units when relevant (e.g. 16-24 C and 61-75 F).
+- Keep structure scannable with clear <h2>/<h3>, practical steps, and actionable FAQ.
+
+Internal linking standards:
+- First internal link should appear within the first ~400 words when relevant links are available.
+- Use specific, destination-descriptive anchor text (never "click here" style anchors).
+- Include at least 2 related internal links plus the most relevant hub/pillar-style page when available in provided candidates.
+- Do not place internal links in headings or table headers.
+
+Commercial integrity:
+- Recommend products only when contextually useful; keep recommendations honest and specific.
+- When mentioning products, include at least one clear drawback for each recommendation.
+- Keep commerce content inline and contextual, not dumped at the end.
+
+Layering expectation:
+- This output is Layer 1 draft material for reviewer and SEO lead refinement; keep it accurate, concise, and reviewer-friendly.`;
+}
+
+function gardenPerContentTypePrompt(args: {
+  siteUrl: string;
+  title: string;
+  editorialBrief: string;
+  contentAngle: string;
+}): string {
+  if (!isGardenSiteUrl(args.siteUrl)) return "";
+  const hay = `${args.title}\n${args.editorialBrief}\n${args.contentAngle}`.toLowerCase();
+
+  if (/\b(toxic|toxicity|poison|pet safe|cat|dog|ingest|ingestion)\b/.test(hay)) {
+    return `Garden type focus: YMYL / Toxicity Page.
+- Start with an amber emergency disclaimer at top.
+- Cover symptoms, mechanism, immediate actions, what to tell vet, timeline, prevention.
+- Include a Reviewer Insight box and primary citations (ASPCA/NHS/peer-reviewed).
+- Include legal informational footer language for toxicity emergencies.`;
+  }
+  if (/\b(best|buying guide|comparison|vs\.?|review|top \d+)\b/.test(hay)) {
+    return `Garden type focus: L2 Buying Guide.
+- Include quick verdict table and "how we evaluated" section.
+- Max 7 products; each product needs pros + honest drawbacks + contextual recommendation.
+- Keep product recommendations inline and include relevant internal links early.`;
+  }
+  if (/\b(hire|designer|landscaper|professional|contractor|near me|city)\b/.test(hay)) {
+    return `Garden type focus: L3 Decision Guide.
+- Cover scope, cost ranges, vetting checklist, questions to ask, red flags, timelines.
+- Primary CTA should direct to verified professional directory flow.
+- Keep tone trust-building and practical; avoid affiliate-style content.`;
+  }
+  if (/\b(why|yellow|brown|droop|wilting|problem|diagnos|fix|how to)\b/.test(hay)) {
+    return `Garden type focus: Diagnostic / How-To.
+- Use Symptom -> Cause -> Fix structure with specific measurements and thresholds.
+- Include "when to call a professional" and "prevent recurrence" sections.
+- Add practical FAQ (3-5 questions).`;
+  }
+  if (/\b(care guide|plant care|watering|light requirements|repot|soil|humidity|species)\b/.test(hay)) {
+    return `Garden type focus: Species Care Power Page.
+- Include quick care summary plus sections for light, watering, soil, humidity/temperature, feeding, repotting, common problems, toxicity (if relevant), and FAQ.
+- Use numeric ranges and measurable instructions throughout.`;
+  }
+  if (/\b(season|monthly|planting calendar|spring|summer|fall|autumn|winter)\b/.test(hay)) {
+    return `Garden type focus: Seasonal / Planting Guide.
+- Use specific month/date ranges (no vague season-only guidance).
+- Include climate/zone notes where relevant.`;
+  }
+  if (/\b(glossary|what is|definition|meaning)\b/.test(hay)) {
+    return `Garden type focus: Glossary Term.
+- Provide concise plain-language definition with botanical accuracy.
+- Add relevant internal links where the term is applied in context.`;
   }
   return "";
 }
@@ -310,12 +415,12 @@ PRODUCT/COMMERCE INTEGRATION
 - HTML pattern — INLINE CSS ONLY (copy style attributes verbatim; replace product name, descriptor, href, image src/alt when applicable):
 
 <div style="display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:1rem 1.25rem;margin:1.5rem 0;padding:1.35rem 1.5rem;border-radius:0.875rem;background-color:#f4f1e8;border:1px solid rgba(45,90,69,0.14);">
-<a href="INTERNAL_LINK_URL" style="flex-shrink:0;display:block;line-height:0;text-decoration:none;"><img src="PRODUCT_IMAGE_URL" alt="Short product name" width="88" height="88" style="display:block;width:5.5rem;height:5.5rem;object-fit:contain;object-position:center;border-radius:0.5rem;background-color:#ffffff;border:1px solid rgba(45,90,69,0.12);" loading="lazy" decoding="async" /></a>
+<a href="INTERNAL_LINK_URL" target="_blank" rel="noopener noreferrer" style="flex-shrink:0;display:block;line-height:0;text-decoration:none;"><img src="PRODUCT_IMAGE_URL" alt="Short product name" width="88" height="88" style="display:block;width:5.5rem;height:5.5rem;object-fit:contain;object-position:center;border-radius:0.5rem;background-color:#ffffff;border:1px solid rgba(45,90,69,0.12);" loading="lazy" decoding="async" /></a>
 <div style="flex:1;min-width:min(100%,220px);">
 <div style="font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-weight:700;font-size:1.125rem;line-height:1.3;color:#0f172a;margin-bottom:0.35rem;">Product name</div>
 <div style="font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:0.9375rem;line-height:1.45;color:#666666;">Short factual descriptor line</div>
 </div>
-<a href="INTERNAL_LINK_URL" style="flex-shrink:0;display:inline-block;padding:0.65rem 1.35rem;border-radius:0.5rem;background-color:#2d5a45;color:#ffffff!important;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:0.9375rem;text-decoration:none!important;white-space:nowrap;">Shop Now →</a>
+<a href="INTERNAL_LINK_URL" target="_blank" rel="noopener noreferrer" style="flex-shrink:0;display:inline-block;padding:0.65rem 1.35rem;border-radius:0.5rem;background-color:#2d5a45;color:#ffffff!important;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:0.9375rem;text-decoration:none!important;white-space:nowrap;">Shop Now →</a>
 </div>
 
 - Place product blocks only after editorial setup in the section; not in the intro or the final sign-off. Prefer one commerce subsection; two cards are allowed when comparing distinct products (per production articles).
@@ -326,7 +431,7 @@ Visual: clean editorial layout — Inter for all text, headings, and styled bloc
 
 FAQ RULES (required for every Weed.com Learn article — never omit)
 - The HTML MUST include the FAQ wrapper with inline styles below (outer div with margin:2.5rem and h2 "Frequently asked questions"). Mandatory block.
-- Exactly 5 FAQs. Questions mirror real search phrasing. Each answer ~24-45 words (clear, useful, concise). Question and answer use the same font weight (readable, not heavy marketing bold on questions).
+- 3 to 5 FAQs (exact count will be specified by caller). Questions mirror real search phrasing. Each answer ~24-45 words (clear, useful, concise). Question and answer use the same font weight (readable, not heavy marketing bold on questions).
 - Template — copy style attributes verbatim per item:
 
 <div style="margin:2.5rem 0 0;padding:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
@@ -404,6 +509,14 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
         ? expertInsightCountRaw
         : undefined;
     const includeImportantNotice = bodyRecord.includeImportantNotice === true;
+    const faqCountRaw = bodyRecord.faqCount;
+    const faqCount =
+      typeof faqCountRaw === "number" &&
+      Number.isInteger(faqCountRaw) &&
+      faqCountRaw >= 3 &&
+      faqCountRaw <= 5
+        ? faqCountRaw
+        : undefined;
 
     const refinementInstructions =
       typeof bodyRecord.refinementInstructions === "string" ? bodyRecord.refinementInstructions.trim() : "";
@@ -425,10 +538,13 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
       );
     }
     if (!ALLOWED_WORD_COUNTS.has(wordCount)) {
-      return NextResponse.json({ error: "wordCount must be one of 1500, 2000, or 3000" }, { status: 400 });
+      return NextResponse.json({ error: "wordCount must be one of 1500, 2000, 2500, or 3000" }, { status: 400 });
     }
     if (expertInsightCountRaw != null && expertInsightCount == null) {
       return NextResponse.json({ error: "expertInsightCount must be an integer between 1 and 3" }, { status: 400 });
+    }
+    if (faqCountRaw != null && faqCount == null) {
+      return NextResponse.json({ error: "faqCount must be an integer between 3 and 5" }, { status: 400 });
     }
 
     const site = await getSiteById(siteId, toolScope);
@@ -441,8 +557,9 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
         ? productTypeForLinks.trim()
         : "";
     const siteOrigin = (site.url ?? "").replace(/\/$/, "");
+    const isWeed = toolScope === WP_TOOL_SCOPE.weedComContentProduction;
     const linkLibraryOpts = {
-      minPostPageSlots: 1 as const,
+      minPostPageSlots: (isWeed ? 3 : 1) as const,
       maxPostPageSlots: 3 as const,
       ...(siteOrigin ? { siteOriginForProductImages: siteOrigin } : {}),
     };
@@ -517,10 +634,17 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
     }
 
     const tonePrompt = site.tone_prompt ?? "Write in a clear, authoritative, and engaging editorial tone.";
+    const gardenPrompt = gardenComLayerPrompt(site.url ?? "");
+    const gardenTypePrompt = gardenPerContentTypePrompt({
+      siteUrl: site.url ?? "",
+      title,
+      editorialBrief: typeof editorialBrief === "string" ? editorialBrief : "",
+      contentAngle: typeof contentAngle === "string" ? contentAngle : "",
+    });
     const initialDraftSystemTail = `You are an expert SEO content writer. Write a complete blog post in valid HTML (not markdown).
 Never wrap the output in code fences: do not use triple backticks, do not write \`\`\`html or \`\`\` before or after the HTML. Return raw HTML only.
 Do NOT put the article title in the body: no <h1> and no title heading. The CMS sets the post title separately.
-Start the body with an introduction using <p>, or the first <h2> section heading. Use <h2> and <h3> only inside the article. Target ${wordCount} words with tight control: keep visible text in ${wordCountBounds(wordCount).min}-${wordCountBounds(wordCount).max} words (HTML tags do not count). In the main body, include at least one and up to three editorial internal links (<a>) to post/page URLs from the **Editorial posts and pages** list, chosen for maximum relevance to nearby copy; you may add separate product/Shop Now usage from the **Products** list—editorial links are not optional when that list is non-empty. Use descriptive anchor text. Do not add external links${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? " except up to three PubMed PMID links, only inside Dr. Tabibi Expert Insight expert-cite lines (and duplicated in Sources per Bible)" : ""}.
+Start the body with an introduction using <p>, or the first <h2> section heading. Use <h2> and <h3> only inside the article. Target ${wordCount} words with tight control: keep visible text in ${wordCountBounds(wordCount).min}-${wordCountBounds(wordCount).max} words (HTML tags do not count). In the main body, include editorial internal links (<a>) to post/page URLs from the **Editorial posts and pages** list, chosen for maximum relevance to nearby copy. ${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? "For Weed.com, include exactly 3 editorial links when 3+ are available (otherwise use all available)." : "Use 1 to 3 editorial links when available."} You may add separate product/Shop Now usage from the **Products** list; editorial links are not optional when the editorial list is non-empty. Use descriptive anchor text. Do not add external links${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? " except up to three PubMed PMID links, only inside Dr. Tabibi Expert Insight expert-cite lines (and duplicated in Sources per Bible)" : ""}.
 
 Typography: Never use the em dash character (Unicode U+2014). Do not type "—". Use commas,
 semicolons, parentheses, or a spaced hyphen " - " instead when you need a pause or aside.
@@ -540,6 +664,8 @@ ${
 
     const systemPrompt = `${tonePrompt}
 ${brandAddendumForScope(toolScope)}
+${gardenPrompt}
+${gardenTypePrompt}
 ${weedLayer1BiblePrompt(toolScope)}
 
 ${isRefinement ? CONTENT_REFINEMENT_SYSTEM_TAIL : initialDraftSystemTail}`;
@@ -566,7 +692,7 @@ ${isRefinement ? CONTENT_REFINEMENT_SYSTEM_TAIL : initialDraftSystemTail}`;
         : "(none — product cards only when URLs appear here.)";
     const linksText = `Linking rules:
 - **URLs are canonical:** copy every href **exactly** from the lists below (full URL including https:// and path). Do not invent paths, guess slugs, or "fix" URLs — only use strings that appear under Editorial posts and pages / Products.
-- Main body: embed at least 1 and at most 3 <a> links to **editorial** post/page URLs from "Editorial posts and pages" (most relevant first). Do not skip editorial links in favor of product links only.
+- Main body: embed **editorial** post/page links from "Editorial posts and pages" (most relevant first). For Weed.com: use exactly 3 editorial links when 3+ are available; if fewer are available, use all available. Do not skip editorial links in favor of product links only.
 - Products: use "Products" for Shop Now cards and commerce-style mentions per scope rules; product links do not replace required editorial post/page links.
 
 Editorial posts and pages (from your site link library — these URLs are live on the site):
@@ -612,7 +738,7 @@ ${productBlock}`;
         : "";
     const weedFaqCountInstruction =
       toolScope === WP_TOOL_SCOPE.weedComContentProduction
-        ? `\n\nFAQ requirement: include exactly 5 relevant FAQs. Keep each answer concise (around 24-45 words), not too short and not too long.`
+        ? `\n\nFAQ requirement: include exactly ${faqCount ?? 5} relevant FAQs. Keep each answer concise (around 24-45 words), not too short and not too long.`
         : "";
     const wordCountInstruction = `\n\nWord count requirement: target ${wordCount} visible words (exclude HTML tags). Keep final output in ${wordCountBounds(wordCount).min}-${wordCountBounds(wordCount).max}.`;
 
@@ -620,13 +746,13 @@ ${productBlock}`;
 
 Keywords: ${keywords.join(", ")}${briefExtra ? `\n\n${briefExtra}` : ""}${weedProductVariationInstruction}
 
-Internal link candidates (editorial: pick 1–3 post/page URLs for in-body <a> links—required when the editorial list is non-empty; products: separate Shop Now / commerce usage; each URL at most once):
+Internal link candidates (editorial: for Weed.com pick exactly 3 most-relevant post/page URLs when possible; products: separate Shop Now / commerce usage; each URL at most once):
 ${linksText}${tabibiLibraryBlock}
 ${weedExpertInsightCountInstruction}
 ${weedFaqCountInstruction}
 ${wordCountInstruction}
 
-Write the full HTML blog post.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? "" : " Include the FAQ block as specified (1 or 2 FAQ subsections by topic fit, bullets in answers where it helps)."} Remember: no em dash character anywhere in the HTML. Do not output an <h1>; the post title is set only in WordPress. Start with <p> or <h2>.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? ` Body, FAQ, cards, footers: Inter-led font stack per Bible. Expert Insight (.expert-box): every opening tag in that block must include font-family:Inter,sans-serif!important (including PMID <a>) so paste/theme cannot override. FAQ: Bible outer wrapper + <h2>Frequently asked questions</h2> + <h3>/<p> pairs. Double-check every internal link: when the Editorial posts and pages list is non-empty, include at least one and up to three <a> links to those post/page URLs in the main body (most relevant first); Shop Now product blocks are separate and do not satisfy the editorial link requirement. Anchor text must be specific (never rely on 'this guide' / 'this breakdown' style phrasing). Product names must follow a clear contextual lead-in. Do not force the primary keyword into the opening of the first paragraph or into headings. Before finalizing: run Contentenator on every Expert Insight box (Bible v7) — study-type labels match the PubMed record type; each PMID matches that paper (no unrelated or fabricated IDs); specific numeric or outcome claims trace to that same PMID, not a different paper or a review-only mention of another study. At most 3 PubMed citations total; PMIDs only in Expert Insight expert-cite lines; each must use a verified PMID article URL (https://pubmed.ncbi.nlm.nih.gov/<digits>/) — never PubMed ?term= search links — with author/journal/year in adjacent text. Do not output a Sources HTML block: the server appends Sources using only PMIDs cited in Expert Insight expert-cite lines (no additional PMIDs). Every Dr. Tabibi Expert Insight block and every product card must use the Bible templates with full inline style=\"...\" attributes (WordPress will not load custom CSS for these). When medication interactions are relevant, include the amber drug-interaction disclaimer box (⚕ icon) from the Bible. End with the legal footer only — required verbatim opening \"For adults 21+ only. Cannabis laws vary by state.\" plus emergency routing; never omit. The article must end completely — never stop mid-sentence.` : ""}`;
+Write the full HTML blog post.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? "" : " Include the FAQ block as specified (1 or 2 FAQ subsections by topic fit, bullets in answers where it helps)."} Remember: no em dash character anywhere in the HTML. Do not output an <h1>; the post title is set only in WordPress. Start with <p> or <h2>.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? ` Body, FAQ, cards, footers: Inter-led font stack per Bible. Expert Insight (.expert-box): every opening tag in that block must include font-family:Inter,sans-serif!important (including PMID <a>) so paste/theme cannot override. FAQ: Bible outer wrapper + <h2>Frequently asked questions</h2> + <h3>/<p> pairs. Double-check every internal link: when the Editorial posts and pages list is non-empty, include exactly 3 most-relevant <a> links to those post/page URLs in the main body when 3+ are available (otherwise include all available); Shop Now product blocks are separate and do not satisfy the editorial link requirement. In all Shop Now product blocks, both the image link and the "Shop Now →" button link must include target="_blank" and rel="noopener noreferrer". Anchor text must be specific (never rely on 'this guide' / 'this breakdown' style phrasing). Product names must follow a clear contextual lead-in. Do not force the primary keyword into the opening of the first paragraph or into headings. Before finalizing: run Contentenator on every Expert Insight box (Bible v7) — study-type labels match the PubMed record type; each PMID matches that paper (no unrelated or fabricated IDs); specific numeric or outcome claims trace to that same PMID, not a different paper or a review-only mention of another study. At most 3 PubMed citations total; PMIDs only in Expert Insight expert-cite lines; each must use a verified PMID article URL (https://pubmed.ncbi.nlm.nih.gov/<digits>/) — never PubMed ?term= search links — with author/journal/year in adjacent text. Do not output a Sources HTML block: the server appends Sources using only PMIDs cited in Expert Insight expert-cite lines (no additional PMIDs). Every Dr. Tabibi Expert Insight block and every product card must use the Bible templates with full inline style=\"...\" attributes (WordPress will not load custom CSS for these). When medication interactions are relevant, include the amber drug-interaction disclaimer box (⚕ icon) from the Bible. End with the legal footer only — required verbatim opening \"For adults 21+ only. Cannabis laws vary by state.\" plus emergency routing; never omit. The article must end completely — never stop mid-sentence.` : ""}`;
 
     const refinementUserMessage = `Title: ${title}
 
