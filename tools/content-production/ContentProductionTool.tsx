@@ -82,6 +82,7 @@ export function ContentProductionTool({
   const [keywordExtractError, setKeywordExtractError] = useState<string | null>(null);
   const [keywordExtractInfo, setKeywordExtractInfo] = useState<string | null>(null);
   const [referenceUrl, setReferenceUrl] = useState("");
+  const [transcript, setTranscript] = useState("");
   const [editorialBrief, setEditorialBrief] = useState("");
   const [sheetRows, setSheetRows] = useState<ArticleSheetRow[]>([]);
   const [sheetLoading, setSheetLoading] = useState(false);
@@ -635,6 +636,7 @@ export function ContentProductionTool({
           title: title.trim(),
           keywords,
           wordCount,
+          ...(transcript.trim() ? { transcript: transcript.trim() } : {}),
           ...(editorialBrief.trim() ? { editorialBrief: editorialBrief.trim() } : {}),
           ...(manualBriefFields && contentAngle.trim() ? { contentAngle: contentAngle.trim() } : {}),
           ...(manualBriefFields && productTypeForLinks.trim()
@@ -743,6 +745,7 @@ export function ContentProductionTool({
           wordCount,
           existingHtml,
           refinementInstructions: instructions,
+          ...(transcript.trim() ? { transcript: transcript.trim() } : {}),
           ...(editorialBrief.trim() ? { editorialBrief: editorialBrief.trim() } : {}),
           ...(manualBriefFields && contentAngle.trim() ? { contentAngle: contentAngle.trim() } : {}),
           ...(manualBriefFields && productTypeForLinks.trim()
@@ -933,6 +936,7 @@ export function ContentProductionTool({
     setKeywordInput("");
     setKeywordExtractError(null);
     setReferenceUrl("");
+    setTranscript("");
     setEditorialBrief("");
     setSheetLoadedLabel(null);
     setContentAngle("");
@@ -1442,6 +1446,19 @@ export function ContentProductionTool({
                 </p>
               </div>
             ) : null}
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">Transcript (optional)</label>
+              <textarea
+                value={transcript}
+                onChange={(e) => setTranscript(e.target.value)}
+                placeholder="Paste call/video/interview transcript. The model will use this as source context for drafting."
+                rows={6}
+                className="w-full rounded border border-slate-200 px-3 py-2 text-sm"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Optional source context used during generate and regenerate.
+              </p>
+            </div>
             {articleSheetFromGoogle && editorialBrief.trim() ? (
               <p className="rounded border border-sky-100 bg-sky-50 px-2 py-1.5 text-xs text-sky-900">
                 Editorial brief from the sheet will be included when you generate (cluster, angle, product type, notes).

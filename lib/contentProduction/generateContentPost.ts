@@ -28,6 +28,8 @@ const WORD_COUNT_TOLERANCE_RATIO = 0.08;
 
 /** Max characters of existing HTML accepted for refinement (existingHtml + refinementInstructions). */
 const MAX_REFINEMENT_HTML_CHARS = 120_000;
+/** Optional transcript context cap to keep prompts stable. */
+const MAX_TRANSCRIPT_CHARS = 40_000;
 
 const CONTENT_REFINEMENT_SYSTEM_TAIL = `You are editing existing article HTML (refinement pass). The user message contains CURRENT HTML and EDITOR INSTRUCTIONS.
 
@@ -500,6 +502,8 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
     const body = await request.json();
     const { siteId, title, keywords, wordCount, editorialBrief, contentAngle, productTypeForLinks } = body;
     const bodyRecord = body as Record<string, unknown>;
+    const transcriptRaw =
+      typeof bodyRecord.transcript === "string" ? bodyRecord.transcript.trim().slice(0, MAX_TRANSCRIPT_CHARS) : "";
     const expertInsightCountRaw = bodyRecord.expertInsightCount;
     const expertInsightCount =
       typeof expertInsightCountRaw === "number" &&
@@ -711,11 +715,17 @@ ${productBlock}`;
     const productBrief = productHint
       ? `Product type focus: still include **at least one editorial post/page link** from the editorial list (1–3 total editorial links). Separately, include 1–2 relevant **product** internal links when they fit. The candidate list favors products matching: "${productHint}". Introduce each product with a short editorial setup (why this example fits the section) so it reads as a recommendation in context, not a sudden plug. If the list is thin, sync product links in Site manager.`
       : "";
+    const transcriptBrief = transcriptRaw
+      ? `Transcript context (source material; prioritize factual alignment with this transcript when relevant):
+----- TRANSCRIPT START -----
+${transcriptRaw}
+----- TRANSCRIPT END -----`
+      : "";
     const weedProductVariationInstruction =
       toolScope === WP_TOOL_SCOPE.weedComContentProduction
         ? `\n\nProduct selection rule: when multiple relevant product URLs are available, prefer priority brands (Binoid, Bloomz, Hometown Hero, Blazed, Cookies) but vary picks across articles instead of repeating the same product URLs each time.`
         : "";
-    const briefExtra = [sheetBrief, angleBrief, productBrief].filter(Boolean).join("\n\n");
+    const briefExtra = [sheetBrief, angleBrief, productBrief, transcriptBrief].filter(Boolean).join("\n\n");
 
     const tabibiForArticle =
       toolScope === WP_TOOL_SCOPE.weedComContentProduction
