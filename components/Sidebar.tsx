@@ -54,6 +54,8 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   "article-title-discovery": IconNewspaper,
   "content-production": IconCompose,
   "weed-com-content-production": IconLeaf,
+  "weed-com-rank-math": IconCompose,
+  "weed-com-strain-comparison": IconLeaf,
 };
 
 type NavRowProps = {

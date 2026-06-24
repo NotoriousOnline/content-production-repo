@@ -269,16 +269,20 @@ export async function generateImage(
 
           throw new Error(IMAGEN_NO_BYTES_TRANSIENT);
         } catch (imagenErr) {
-          if (isImagenPaidPlanError(imagenErr)) {
+          const switchToGemini =
+            isImagenPaidPlanError(imagenErr) ||
+            isRetryableImagenError(imagenErr) ||
+            isDailyQuotaExceededError(imagenErr);
+          if (switchToGemini) {
             console.warn(
-              "[geminiClient] Imagen is not available on this API key (paid plan required). Falling back to",
+              "[geminiClient] Imagen unavailable (plan/quota/rate limit). Falling back to",
               DEFAULT_IMAGE_MODEL_ID
             );
             mode = "gemini";
             contentModelId = DEFAULT_IMAGE_MODEL_ID;
-          } else {
-            throw imagenErr;
+            continue;
           }
+          throw imagenErr;
         }
       }
 

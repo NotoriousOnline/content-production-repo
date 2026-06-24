@@ -3,6 +3,7 @@ import { getSiteById, type WPToolScope } from "@/lib/wpSites";
 import { uploadMedia, updateMediaDetails } from "@/lib/wordpressClient";
 import { compressImageForUpload } from "@/lib/contentProduction/wpImageCompress";
 import { errorMessage, serverLog } from "@/lib/serverLog";
+import { formatWpNetworkErrorHint, isTransientWpNetworkError } from "@/lib/wpFetch";
 
 /** One base64 image per request — stays under Vercel function payload limits. */
 const MAX_UPLOAD_IMAGE_BODY_BYTES = 3_500_000;
@@ -76,13 +77,16 @@ export async function postPublishUploadImage(request: Request, toolScope: WPTool
       index: idx,
     });
   } catch (err) {
-    const msg = errorMessage(err);
+    const msg = isTransientWpNetworkError(err) ? formatWpNetworkErrorHint(err) : errorMessage(err);
     console.error("[publish/upload-image] Error:", msg);
     void serverLog({
       level: "error",
       source: "content-production/publish-upload-image",
       message: msg || "Upload failed",
     });
-    return NextResponse.json({ error: msg || "Failed to upload image" }, { status: 500 });
+    return NextResponse.json(
+      { error: msg || "Failed to upload image" },
+      { status: isTransientWpNetworkError(err) ? 503 : 500 }
+    );
   }
 }

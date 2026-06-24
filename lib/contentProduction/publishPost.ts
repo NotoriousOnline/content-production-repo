@@ -22,6 +22,7 @@ import {
 } from "@/lib/wordpressClient";
 import { compressImageForUpload } from "@/lib/contentProduction/wpImageCompress";
 import { errorMessage, serverLog } from "@/lib/serverLog";
+import { formatWpNetworkErrorHint, isTransientWpNetworkError } from "@/lib/wpFetch";
 
 /** Final publish payload is small (HTML + image URLs). Kept generous for long posts. */
 const MAX_PUBLISH_BODY_BYTES = 4_200_000;
@@ -233,6 +234,9 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
       keywords?: unknown;
       /** When set, updates this draft instead of creating a new post. */
       postId?: unknown;
+      /** WordPress post slug (e.g. blue-dream-vs-gelato for /learn/ URLs). */
+      postSlug?: unknown;
+      rankMathOverrides?: { focuskw?: string; seoTitle?: string; metadesc?: string };
     };
     try {
       body = JSON.parse(raw) as typeof body;
@@ -240,7 +244,9 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
 
-    const { siteId, title, content, images, referenceUrl, keywords } = body;
+    const { siteId, title, content, images, referenceUrl, keywords, rankMathOverrides } = body;
+    const postSlug =
+      typeof body.postSlug === "string" && body.postSlug.trim() ? body.postSlug.trim().slice(0, 200) : undefined;
     const existingPostId =
       typeof body.postId === "number" && Number.isFinite(body.postId) && body.postId > 0
         ? Math.floor(body.postId)
@@ -268,9 +274,10 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
 
     let featuredMediaId: number | undefined;
     const rankMathFocusKw =
-      toolScope === WP_TOOL_SCOPE.weedComContentProduction
+      rankMathOverrides?.focuskw?.trim() ||
+      (toolScope === WP_TOOL_SCOPE.weedComContentProduction
         ? rankMathFocusKeywordFromTitle(title, keywords)
-        : pickFocusKeyphrase(keywords, title);
+        : pickFocusKeyphrase(keywords, title));
     const focuskwForAlt = pickFocusKeyphrase(keywords, title);
 
     if (featuredImg) {
@@ -369,16 +376,20 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
         console.warn(`[publish] ${isPrefabSite(site) ? "Prefab" : "Green.org"}: no categories available (REST and snapshot empty).`);
       }
     }
+    const publishOpts = {
+      ...taxonomyOpts,
+      ...(postSlug ? { slug: postSlug } : {}),
+    };
     const { id: postId, link, editUrl, status } =
       existingPostId != null
-        ? await updatePost(site, existingPostId, title, finalContent, undefined, taxonomyOpts)
-        : await createPost(site, title, finalContent, undefined, taxonomyOpts);
+        ? await updatePost(site, existingPostId, title, finalContent, undefined, publishOpts)
+        : await createPost(site, title, finalContent, undefined, publishOpts);
     if (featuredMediaId != null && featuredMediaId > 0) {
       await setPostFeaturedMedia(site, postId, featuredMediaId);
     }
 
-    const metadesc = buildMetaDescription(finalContent);
-    const seoTitle = title.slice(0, 200);
+    const metadesc = rankMathOverrides?.metadesc?.trim() || buildMetaDescription(finalContent);
+    const seoTitle = rankMathOverrides?.seoTitle?.trim() || title.slice(0, 200);
 
     let yoastMetaOk: boolean | undefined;
     let rankMathOk: boolean | undefined;
@@ -433,7 +444,7 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
         : {}),
     });
   } catch (err) {
-    const msg = errorMessage(err);
+    const msg = isTransientWpNetworkError(err) ? formatWpNetworkErrorHint(err) : errorMessage(err);
     console.error("[publish] Error:", msg);
     void serverLog({
       level: "error",
@@ -442,7 +453,7 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
     });
     return NextResponse.json(
       { error: msg || "Failed to publish" },
-      { status: 500 }
+      { status: isTransientWpNetworkError(err) ? 503 : 500 }
     );
   }
 }

@@ -7,6 +7,7 @@ import {
   targetKeywordToKeywords,
   type ArticleSheetRow,
 } from "@/lib/articleSheetCalendar";
+import { parseGenerateImagesResponse } from "@/lib/contentProduction/generateImagesResponse";
 
 type ImageItem = {
   type: "featured" | "in-content";
@@ -124,6 +125,7 @@ export function ContentProductionTool({
   const [regenerateExtraNotes, setRegenerateExtraNotes] = useState("");
   const [regenerateError, setRegenerateError] = useState<{ index: number; message: string } | null>(null);
   const [imagesError, setImagesError] = useState<string | null>(null);
+  const [contentGenerateError, setContentGenerateError] = useState<string | null>(null);
   const contentEditableRef = useRef<HTMLDivElement>(null);
   const publishCancelledRef = useRef(false);
   const publishAbortRef = useRef<AbortController | null>(null);
@@ -626,7 +628,9 @@ export function ContentProductionTool({
     setApprovedContent(null);
     setPublishResult(null);
     setImagesError(null);
+    setContentGenerateError(null);
 
+    let contentPhaseComplete = false;
     try {
       const contentRes = await fetch(`${api}/generate-content`, {
         method: "POST",
@@ -647,18 +651,26 @@ export function ContentProductionTool({
           ...(showExpertInsightCountSelector ? { includeImportantNotice } : {}),
         }),
       });
-      const contentData = await contentRes.json();
+      const contentData = (await contentRes.json()) as { content?: string; error?: string; internalLinksUsed?: InternalLink[] };
 
       if (!contentRes.ok) {
         setContentLoading(false);
         setGenerating(false);
-        setImagesError(null);
+        setContentGenerateError(contentData.error ?? `Content generation failed (HTTP ${contentRes.status})`);
+        return;
+      }
+
+      if (typeof contentData.content !== "string" || !contentData.content.trim()) {
+        setContentLoading(false);
+        setGenerating(false);
+        setContentGenerateError("Server returned no article HTML. Try again.");
         return;
       }
 
       setContentLoading(false);
       setGeneratedContent(contentData.content);
       setInternalLinksUsed(contentData.internalLinksUsed ?? []);
+      contentPhaseComplete = true;
       setImagesLoading(true);
 
       const imagesRes = await fetch(`${api}/generate-images`, {
@@ -676,9 +688,12 @@ export function ContentProductionTool({
 
       setImagesLoading(false);
       setGenerating(false);
-      if (imagesRes.ok && Array.isArray(imagesData)) {
-        setImagesError(null);
-        const mapped: ImageItem[] = imagesData.map(
+      const { images: imageList, warnings: imageWarnings } = parseGenerateImagesResponse(imagesData);
+      if (imagesRes.ok && imageList.length > 0) {
+        setImagesError(
+          imageWarnings.length > 0 ? imageWarnings.join(" ") : null
+        );
+        const mapped: ImageItem[] = imageList.map(
           (img: {
             type?: string;
             index?: number;
@@ -710,7 +725,12 @@ export function ContentProductionTool({
       setContentLoading(false);
       setImagesLoading(false);
       setGenerating(false);
-      setImagesError(err instanceof Error ? err.message : "Image generation failed. You can retry below.");
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!contentPhaseComplete) {
+        setContentGenerateError(msg || "Content generation failed. Check the server terminal or logs, then try again.");
+      } else {
+        setImagesError(msg || "Image generation failed. You can retry below.");
+      }
     }
   };
 
@@ -804,8 +824,10 @@ export function ContentProductionTool({
       });
       const imagesData = await imagesRes.json();
       setImagesLoading(false);
-      if (imagesRes.ok && Array.isArray(imagesData)) {
-        const mapped: ImageItem[] = imagesData.map(
+      const { images: imageList, warnings: imageWarnings } = parseGenerateImagesResponse(imagesData);
+      if (imagesRes.ok && imageList.length > 0) {
+        setImagesError(imageWarnings.length > 0 ? imageWarnings.join(" ") : null);
+        const mapped: ImageItem[] = imageList.map(
           (img: {
             type?: string;
             index?: number;
@@ -840,7 +862,7 @@ export function ContentProductionTool({
     }
   }, [approvedContent, generatedContent, selectedSite?.id, title, keywords, wordCount]);
 
-  const section2Unlocked = contentLoading || contentRefining || !!generatedContent;
+  const section2Unlocked = contentLoading || contentRefining || !!generatedContent || !!contentGenerateError;
   const hasContent = !!generatedContent || !!contentApproved;
   const section3Unlocked = hasContent;
   const section4Unlocked = (contentApproved && imagesApproved) || publishing;
@@ -1680,6 +1702,15 @@ export function ContentProductionTool({
                   Content approved
                 </button>
               )}
+            </div>
+          ) : contentGenerateError ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {contentGenerateError}
+              </div>
+              <p className="text-sm text-slate-600">
+                Fix the issue above (API keys, site config, or server logs), then click Generate Content again.
+              </p>
             </div>
           ) : (
             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-slate-500">

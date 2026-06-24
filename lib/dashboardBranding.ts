@@ -15,6 +15,9 @@ export const toolDashboardLabel: Record<string, string> = {
   "article-title-discovery": "Ideas & angles",
   "content-production": "Publish anywhere",
   "weed-com-content-production": "Weed.com editorial",
+  "weed-com-strain-comparison": "Strain vs strain",
+  "weed-com-strain-page": "Individual strains",
+  "weed-com-rank-math": "Rank Math SEO",
 };
 
 /** Tokens for sidebar nav rows (active bar, row bg, icon box). */
@@ -102,6 +105,54 @@ const themes: Record<string, ToolTheme> = {
       rowIdle: "text-slate-400 hover:bg-white/[0.05] hover:text-sky-200",
       iconActive: "bg-sky-500/45 text-sky-50 ring-1 ring-sky-300/30",
       iconIdle: "bg-white/[0.06] text-slate-500 group-hover:text-sky-200",
+    },
+  },
+  "weed-com-strain-comparison": {
+    headerAccent: "border-l-4 border-teal-500",
+    cardBlob: "from-teal-200 to-cyan-100",
+    cardBorderHover: "hover:border-teal-200",
+    cardTitleHover: "group-hover:text-teal-800",
+    cardCta: "text-teal-700",
+    descriptionClass: "text-teal-950/70",
+    sidebarNav: {
+      bar: "bg-teal-400",
+      rowActive:
+        "bg-teal-500/[0.22] text-teal-50 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)] ring-1 ring-teal-400/25",
+      rowIdle: "text-slate-400 hover:bg-white/[0.05] hover:text-teal-200",
+      iconActive: "bg-teal-500/45 text-teal-50 ring-1 ring-teal-300/30",
+      iconIdle: "bg-white/[0.06] text-slate-500 group-hover:text-teal-200",
+    },
+  },
+  "weed-com-strain-page": {
+    headerAccent: "border-l-4 border-green-500",
+    cardBlob: "from-green-200 to-lime-100",
+    cardBorderHover: "hover:border-green-200",
+    cardTitleHover: "group-hover:text-green-800",
+    cardCta: "text-green-700",
+    descriptionClass: "text-green-950/70",
+    sidebarNav: {
+      bar: "bg-green-400",
+      rowActive:
+        "bg-green-500/[0.22] text-green-50 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)] ring-1 ring-green-400/25",
+      rowIdle: "text-slate-400 hover:bg-white/[0.05] hover:text-green-200",
+      iconActive: "bg-green-500/45 text-green-50 ring-1 ring-green-300/30",
+      iconIdle: "bg-white/[0.06] text-slate-500 group-hover:text-green-200",
+    },
+  },
+  "weed-com-rank-math": {
+    headerAccent: "border-l-4 border-lime-500",
+    cardBlob: "from-lime-200 to-emerald-100",
+    cardBorderHover: "hover:border-lime-200",
+    cardTitleHover: "group-hover:text-lime-800",
+    cardCta: "text-lime-700",
+    descriptionClass: "text-lime-950/70",
+    sidebarNav: {
+      bar: "bg-lime-400",
+      rowActive:
+        "bg-lime-500/[0.22] text-lime-50 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)] ring-1 ring-lime-400/25",
+      rowIdle: "text-slate-400 hover:bg-white/[0.05] hover:text-lime-200",
+      iconActive: "bg-lime-500/45 text-lime-50 ring-1 ring-lime-300/30",
+      iconIdle: "bg-white/[0.06] text-slate-500 group-hover:text-lime-200",
     },
   },
   "weed-com-content-production": {

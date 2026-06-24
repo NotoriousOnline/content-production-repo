@@ -7,6 +7,11 @@ import { createSite, getSites, type CreateSiteData, type WPToolScope } from "@/l
 
 const MASKED_PASSWORD = "••••••••";
 
+function normalizeSiteUrl(url: string): string {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
 function maskSite<T extends { app_password?: string }>(site: T): Omit<T, "app_password"> & { app_password: string } {
   return { ...site, app_password: MASKED_PASSWORD };
 }
@@ -76,7 +81,8 @@ export async function handleSitesPOST(request: Request, scope: WPToolScope) {
       );
     }
 
-    const conn = await testWordPressConnection(url, username, app_password);
+    const normalizedUrl = normalizeSiteUrl(String(url));
+    const conn = await testWordPressConnection(normalizedUrl, username, app_password);
     if (!conn.ok) {
       const hint = conn.detail ? ` (${conn.detail})` : "";
       const wafHint =
@@ -101,7 +107,7 @@ export async function handleSitesPOST(request: Request, scope: WPToolScope) {
 
     const data: CreateSiteData = {
       name,
-      url,
+      url: normalizedUrl,
       username,
       app_password,
       tone_prompt: tone_prompt ?? undefined,

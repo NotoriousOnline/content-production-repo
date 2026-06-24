@@ -1,4 +1,4 @@
-import { wpFetch } from "@/lib/wpFetch";
+import { wpFetch, formatWpNetworkErrorHint, isTransientWpNetworkError } from "@/lib/wpFetch";
 
 export type WPSite = {
   url: string;
@@ -160,6 +160,18 @@ export function getAuthHeader(site: WPSite): string {
   return `Basic ${Buffer.from(creds, "utf-8").toString("base64")}`;
 }
 
+function applyWafBypassHeaders(h: Record<string, string>): void {
+  const wafCookie = (process.env.WORDPRESS_WAF_BYPASS_COOKIE ?? "").trim();
+  if (wafCookie) {
+    h.Cookie = wafCookie;
+  }
+  const bypassHeaderName = (process.env.WORDPRESS_WAF_BYPASS_HEADER_NAME ?? "").trim();
+  const bypassHeaderValue = (process.env.WORDPRESS_WAF_BYPASS_HEADER_VALUE ?? "").trim();
+  if (bypassHeaderName && bypassHeaderValue) {
+    h[bypassHeaderName] = bypassHeaderValue;
+  }
+}
+
 /** Standard headers for WordPress REST (auth + browser-like UA). */
 export function wpRestHeaders(site: WPSite, opts?: { contentTypeJson?: boolean }): Record<string, string> {
   const originRoot = siteRestOrigin(site);
@@ -175,15 +187,7 @@ export function wpRestHeaders(site: WPSite, opts?: { contentTypeJson?: boolean }
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "cross-site",
   };
-  const wafCookie = (process.env.WORDPRESS_WAF_BYPASS_COOKIE ?? "").trim();
-  if (wafCookie) {
-    h.Cookie = wafCookie;
-  }
-  const bypassHeaderName = (process.env.WORDPRESS_WAF_BYPASS_HEADER_NAME ?? "").trim();
-  const bypassHeaderValue = (process.env.WORDPRESS_WAF_BYPASS_HEADER_VALUE ?? "").trim();
-  if (bypassHeaderName && bypassHeaderValue) {
-    h[bypassHeaderName] = bypassHeaderValue;
-  }
+  applyWafBypassHeaders(h);
   if (opts?.contentTypeJson) {
     h["Content-Type"] = "application/json";
   }
@@ -380,7 +384,7 @@ export async function createPost(
   title: string,
   content: string,
   featuredMediaId?: number,
-  opts?: { categories?: number[]; tags?: number[] }
+  opts?: { categories?: number[]; tags?: number[]; slug?: string }
 ): Promise<{ id: number; link: string; editUrl: string; status: string }> {
   const base = site.url.replace(/\/$/, "");
   const body: Record<string, unknown> = {
@@ -390,6 +394,9 @@ export async function createPost(
   };
   if (featuredMediaId != null && featuredMediaId > 0) {
     body.featured_media = featuredMediaId;
+  }
+  if (typeof opts?.slug === "string" && opts.slug.trim()) {
+    body.slug = opts.slug.trim().slice(0, 200);
   }
   if (Array.isArray(opts?.categories) && opts.categories.length > 0) {
     body.categories = opts.categories.filter((x) => Number.isFinite(x) && x > 0);
@@ -427,7 +434,7 @@ export async function updatePost(
   title: string,
   content: string,
   featuredMediaId?: number,
-  opts?: { categories?: number[]; tags?: number[] }
+  opts?: { categories?: number[]; tags?: number[]; slug?: string }
 ): Promise<{ id: number; link: string; editUrl: string; status: string }> {
   if (!Number.isFinite(postId) || postId <= 0) {
     throw new Error("updatePost: invalid postId");
@@ -440,6 +447,9 @@ export async function updatePost(
   };
   if (featuredMediaId != null && featuredMediaId > 0) {
     body.featured_media = featuredMediaId;
+  }
+  if (typeof opts?.slug === "string" && opts.slug.trim()) {
+    body.slug = opts.slug.trim().slice(0, 200);
   }
   if (Array.isArray(opts?.categories) && opts.categories.length > 0) {
     body.categories = opts.categories.filter((x) => Number.isFinite(x) && x > 0);
@@ -467,6 +477,222 @@ export async function updatePost(
     link: data.link,
     editUrl: `${base}/wp-admin/post.php?post=${data.id}&action=edit`,
     status,
+  };
+}
+
+const STRAIN_REST_COLLECTIONS = ["strains", "strain", "posts", "pages"] as const;
+
+/** Which REST collections to probe for strain pages (CPT first, then posts/pages). */
+export const STRAIN_PAGE_REST_COLLECTIONS = STRAIN_REST_COLLECTIONS;
+
+async function restCollectionExists(site: WPSite, collection: string): Promise<boolean> {
+  const base = site.url.replace(/\/$/, "");
+  const res = await wpFetch(wpRestUrl(base, `wp/v2/${collection}?per_page=1`), {
+    headers: wpRestHeaders(site),
+  });
+  return res.ok;
+}
+
+async function resolveStrainRestCollection(site: WPSite): Promise<string> {
+  for (const col of STRAIN_REST_COLLECTIONS) {
+    if (await restCollectionExists(site, col)) return col;
+  }
+  return "posts";
+}
+
+export type WPPostInCollection = {
+  id: number;
+  link: string;
+  status: string;
+  restCollection: string;
+};
+
+/** Find which REST collection owns a post ID (tries strains CPT, then posts/pages). */
+export async function resolveRestCollectionForPostId(
+  site: WPSite,
+  postId: number
+): Promise<WPPostInCollection | null> {
+  if (!Number.isFinite(postId) || postId <= 0) return null;
+  const base = site.url.replace(/\/$/, "");
+  for (const col of STRAIN_REST_COLLECTIONS) {
+    if (!(await restCollectionExists(site, col))) continue;
+    const res = await wpFetch(wpRestUrl(base, `wp/v2/${col}/${postId}?context=edit`), {
+      headers: wpRestHeaders(site),
+    });
+    if (!res.ok) continue;
+    const data = (await res.json()) as { id?: number; link?: string; status?: string };
+    if (data?.id === postId) {
+      return {
+        id: postId,
+        link: String(data.link ?? "").trim(),
+        status: String(data.status ?? "draft"),
+        restCollection: col,
+      };
+    }
+  }
+  return null;
+}
+
+type WPUserRow = { id?: number };
+
+/** Resolve a WordPress user ID by nicename/slug (requires edit context for some sites). */
+export async function resolveWpUserIdBySlug(site: WPSite, slug: string): Promise<number | null> {
+  const s = slug.trim();
+  if (!s) return null;
+  const base = site.url.replace(/\/$/, "");
+  const path = `wp/v2/users?slug=${encodeURIComponent(s)}&context=edit&per_page=1`;
+  const res = await wpFetch(wpRestUrl(base, path), {
+    headers: wpRestHeaders(site),
+  });
+  if (!res.ok) return null;
+  const rows = (await res.json()) as WPUserRow[];
+  const id = Array.isArray(rows) ? rows[0]?.id : undefined;
+  return typeof id === "number" && id > 0 ? id : null;
+}
+
+export type StrainPostWriteOpts = {
+  slug?: string;
+  meta?: Record<string, string>;
+  restCollection?: string;
+  preserveStatus?: boolean;
+  authorId?: number;
+  refreshPublishDate?: boolean;
+};
+
+function applyStrainPostAuthorAndDate(body: Record<string, unknown>, opts?: StrainPostWriteOpts): void {
+  if (opts?.authorId != null && opts.authorId > 0) {
+    body.author = opts.authorId;
+  }
+  if (opts?.refreshPublishDate) {
+    const date_gmt = new Date().toISOString().slice(0, 19);
+    body.date_gmt = date_gmt;
+    body.modified_gmt = date_gmt;
+  }
+}
+
+export async function createStrainPost(
+  site: WPSite,
+  title: string,
+  content: string,
+  opts?: StrainPostWriteOpts
+): Promise<{ id: number; link: string; editUrl: string; status: string; restCollection: string }> {
+  const base = site.url.replace(/\/$/, "");
+  const restCollection =
+    opts?.restCollection && (await restCollectionExists(site, opts.restCollection))
+      ? opts.restCollection
+      : await resolveStrainRestCollection(site);
+  const body: Record<string, unknown> = {
+    title,
+    content,
+    status: "draft",
+  };
+  if (typeof opts?.slug === "string" && opts.slug.trim()) {
+    body.slug = opts.slug.trim().slice(0, 200);
+  }
+  if (opts?.meta && Object.keys(opts.meta).length > 0) {
+    body.meta = opts.meta;
+    body.meta_input = { ...opts.meta };
+  }
+  applyStrainPostAuthorAndDate(body, opts);
+
+  const res = await wpFetch(wpRestUrl(base, `wp/v2/${restCollection}?context=edit`), {
+    method: "POST",
+    headers: wpRestHeaders(site, { contentTypeJson: true }),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`WP createStrainPost failed: ${res.status} ${errText}`);
+  }
+  const data = (await res.json()) as { id: number; link: string; status?: string };
+  const status = data.status ?? "draft";
+  return {
+    id: data.id,
+    link: data.link,
+    editUrl: `${base}/wp-admin/post.php?post=${data.id}&action=edit`,
+    status,
+    restCollection,
+  };
+}
+
+export async function updateStrainPost(
+  site: WPSite,
+  postId: number,
+  title: string,
+  content: string,
+  opts?: StrainPostWriteOpts
+): Promise<{ id: number; link: string; editUrl: string; status: string; restCollection: string }> {
+  if (!Number.isFinite(postId) || postId <= 0) {
+    throw new Error("updateStrainPost: invalid postId");
+  }
+  const base = site.url.replace(/\/$/, "");
+
+  let resolved = await resolveRestCollectionForPostId(site, postId);
+  if (
+    !resolved &&
+    opts?.restCollection &&
+    (await restCollectionExists(site, opts.restCollection))
+  ) {
+    const col = opts.restCollection;
+    const res = await wpFetch(wpRestUrl(base, `wp/v2/${col}/${postId}?context=edit`), {
+      headers: wpRestHeaders(site),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { id?: number; link?: string; status?: string };
+      if (data?.id === postId) {
+        resolved = {
+          id: postId,
+          link: String(data.link ?? "").trim(),
+          status: String(data.status ?? "draft"),
+          restCollection: col,
+        };
+      }
+    }
+  }
+
+  if (!resolved) {
+    throw new Error(
+      `WP updateStrainPost: post ID ${postId} not found in REST collections (${STRAIN_REST_COLLECTIONS.join(", ")}). Check the post ID and that REST API is enabled.`
+    );
+  }
+
+  const restCollection = resolved.restCollection;
+  const body: Record<string, unknown> = {
+    title,
+    content,
+  };
+  // Preserve live/draft status unless explicitly creating a draft revision.
+  if (opts?.preserveStatus !== false) {
+    body.status = resolved.status;
+  } else {
+    body.status = "draft";
+  }
+  if (typeof opts?.slug === "string" && opts.slug.trim()) {
+    body.slug = opts.slug.trim().slice(0, 200);
+  }
+  if (opts?.meta && Object.keys(opts.meta).length > 0) {
+    body.meta = opts.meta;
+    body.meta_input = { ...opts.meta };
+  }
+  applyStrainPostAuthorAndDate(body, opts);
+
+  const res = await wpFetch(wpRestUrl(base, `wp/v2/${restCollection}/${postId}?context=edit`), {
+    method: "POST",
+    headers: wpRestHeaders(site, { contentTypeJson: true }),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`WP updateStrainPost failed: ${res.status} ${errText}`);
+  }
+  const data = (await res.json()) as { id: number; link: string; status?: string };
+  const status = data.status ?? resolved.status;
+  return {
+    id: data.id,
+    link: data.link,
+    editUrl: `${base}/wp-admin/post.php?post=${data.id}&action=edit`,
+    status,
+    restCollection,
   };
 }
 
@@ -541,10 +767,16 @@ export async function getCategoryIdByName(site: WPSite, categoryName: string): P
 }
 
 /** Set featured image after post exists (more reliable than only passing featured_media on create). */
-export async function setPostFeaturedMedia(site: WPSite, postId: number, mediaId: number): Promise<void> {
+export async function setPostFeaturedMedia(
+  site: WPSite,
+  postId: number,
+  mediaId: number,
+  restCollection = "posts"
+): Promise<void> {
   if (!Number.isFinite(mediaId) || mediaId <= 0) return;
   const base = site.url.replace(/\/$/, "");
-  const res = await wpFetch(wpRestUrl(base, `wp/v2/posts/${postId}`), {
+  const collection = restCollection.replace(/^\/+|\/+$/g, "") || "posts";
+  const res = await wpFetch(wpRestUrl(base, `wp/v2/${collection}/${postId}`), {
     method: "POST",
     headers: wpRestHeaders(site, { contentTypeJson: true }),
     body: JSON.stringify({ featured_media: mediaId }),
@@ -564,6 +796,7 @@ export async function uploadMedia(
   const bases = restBasesForMediaUpload(site.url ?? "");
 
   const fetchErr = (e: unknown): string => {
+    if (isTransientWpNetworkError(e)) return formatWpNetworkErrorHint(e);
     const msg = e instanceof Error ? e.message : String(e);
     const cause = e instanceof Error && e.cause ? String(e.cause) : "";
     return cause ? `${msg} | cause: ${cause}` : msg;
@@ -711,17 +944,254 @@ export async function updatePostYoastMeta(
   return false;
 }
 
-/** Rank Math SEO post meta (requires Rank Math meta to be writable via REST on the site). */
-export async function updatePostRankMathMeta(
+export type WPPostResolved = {
+  id: number;
+  title: string;
+  link: string;
+  slug: string;
+  /** REST collection segment, e.g. posts | pages | strain */
+  restCollection: string;
+  excerptPlain: string;
+  contentPlain: string;
+};
+
+export type WPRankMathFields = {
+  focusKeyword: string;
+  metaDescription: string;
+  seoTitle: string;
+};
+
+function stripRenderedHtml(s: string): string {
+  return s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizePublicPath(url: string): string {
+  const withProtocol = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+  const parsed = new URL(withProtocol);
+  const path = parsed.pathname.replace(/\/+$/, "") || "/";
+  return `${parsed.origin}${path}`.toLowerCase();
+}
+
+function slugFromPublicUrl(url: string): string {
+  const withProtocol = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+  const parts = new URL(withProtocol).pathname.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+
+const POST_LOOKUP_COLLECTIONS = ["posts", "pages", "strain", "strains", "learn"] as const;
+
+type WPRestPostRow = {
+  id: number;
+  title?: { rendered?: string };
+  link?: string;
+  slug?: string;
+  excerpt?: { rendered?: string };
+  content?: { rendered?: string };
+};
+
+function publicRestHeaders(): Record<string, string> {
+  const h: Record<string, string> = {
+    Accept: "application/json",
+    "User-Agent": wpRestUserAgent(),
+    "Accept-Language": "en-US,en;q=0.9",
+  };
+  applyWafBypassHeaders(h);
+  return h;
+}
+
+async function fetchRestJsonRows(url: string, headers: Record<string, string>): Promise<WPRestPostRow[]> {
+  const res = await wpFetch(url, { headers });
+  if (res.status === 404) return [];
+  if (!res.ok) return [];
+  const rows = (await res.json()) as WPRestPostRow[];
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function fetchPostsBySlug(
+  site: WPSite,
+  restCollection: string,
+  slug: string,
+  opts?: { context?: "view" | "edit" }
+): Promise<WPRestPostRow[]> {
+  const base = site.url.replace(/\/$/, "");
+  const context = opts?.context ?? "view";
+  const path = `wp/v2/${restCollection}?slug=${encodeURIComponent(slug)}&context=${context}&per_page=10`;
+  if (context === "view") {
+    const pub = await fetchRestJsonRows(wpRestUrl(base, path), publicRestHeaders());
+    if (pub.length > 0) return pub;
+  }
+  return fetchRestJsonRows(wpRestUrl(base, path), wpRestHeaders(site));
+}
+
+async function searchPostsByTerm(site: WPSite, term: string): Promise<WPRestPostRow[]> {
+  const base = site.url.replace(/\/$/, "");
+  const path = `wp/v2/posts?search=${encodeURIComponent(term)}&per_page=20&context=view`;
+  const authed = await fetchRestJsonRows(wpRestUrl(base, path), wpRestHeaders(site));
+  if (authed.length > 0) return authed;
+  return fetchRestJsonRows(wpRestUrl(base, path), publicRestHeaders());
+}
+
+function rowToResolved(row: WPRestPostRow, restCollection: string): WPPostResolved {
+  return {
+    id: row.id,
+    title: stripRenderedHtml(row.title?.rendered ?? ""),
+    link: String(row.link ?? "").trim(),
+    slug: String(row.slug ?? "").trim(),
+    restCollection,
+    excerptPlain: stripRenderedHtml(row.excerpt?.rendered ?? ""),
+    contentPlain: stripRenderedHtml(row.content?.rendered ?? "").slice(0, 8000),
+  };
+}
+
+/** Resolve a published Weed.com URL to a WordPress REST post (posts, pages, or common CPTs). */
+export async function resolvePostByPublicUrl(site: WPSite, publicUrl: string): Promise<WPPostResolved | null> {
+  const slug = slugFromPublicUrl(publicUrl);
+  if (!slug) return null;
+  const targetPath = normalizePublicPath(publicUrl);
+
+  for (const collection of POST_LOOKUP_COLLECTIONS) {
+    let rows = await fetchPostsBySlug(site, collection, slug, { context: "view" });
+    if (rows.length === 0) {
+      rows = await fetchPostsBySlug(site, collection, slug, { context: "edit" });
+    }
+    if (rows.length === 0) continue;
+    const exact = rows.find((r) => r.link && normalizePublicPath(r.link) === targetPath);
+    const pick = exact ?? rows[0];
+    if (!pick?.id) continue;
+    return rowToResolved(pick, collection);
+  }
+
+  const searchTerm = slug.replace(/-/g, " ");
+  const searched = await searchPostsByTerm(site, searchTerm);
+  const fromSearch = searched.find((r) => r.link && normalizePublicPath(r.link) === targetPath);
+  if (fromSearch?.id) {
+    return rowToResolved(fromSearch, "posts");
+  }
+
+  return null;
+}
+
+/** Human-readable reason when slug/ID lookup returns null (Cloudflare vs auth vs missing post). */
+export async function explainPostLookupFailure(
+  site: WPSite,
+  opts: { postId?: number }
+): Promise<string> {
+  const base = site.url.replace(/\/$/, "");
+  const path =
+    opts.postId && opts.postId > 0
+      ? `wp/v2/posts/${opts.postId}?context=view`
+      : "wp/v2/posts?per_page=1&context=view";
+  const res = await wpFetch(wpRestUrl(base, path), { headers: wpRestHeaders(site) });
+  const text = await res.text();
+  if (looksLikeCloudflareBlock(text)) {
+    const cookieSet = !!(process.env.WORDPRESS_WAF_BYPASS_COOKIE ?? "").trim();
+    const base = cookieSet
+      ? "WORDPRESS_WAF_BYPASS_COOKIE is set and sent on every request, but Cloudflare still returned the browser challenge."
+      : "WordPress REST is blocked by Cloudflare.";
+    return `${base} The post may still exist. Ask weed.com infra to confirm the WAF skip rule matches host weed.com, URI /wp-json/*, cookie name cf_bypass, and this exact value — or add WORDPRESS_WAF_BYPASS_QUERY / WORDPRESS_WAF_BYPASS_HEADER_* if the rule requires them.${cloudflareExtraHint()}`;
+  }
+  if (res.status === 401) {
+    return `WordPress rejected the application password (HTTP 401 invalid application password). Select the site "weed.com ALEX username" or regenerate the app password in wp-admin → Users → Application Passwords.`;
+  }
+  if (res.status === 403) {
+    return `WordPress REST returned HTTP 403. Check site credentials and Cloudflare/WAF rules for /wp-json/.`;
+  }
+  if (opts.postId && res.status === 404) {
+    return `WordPress returned HTTP 404 for post ID ${opts.postId} — that ID does not exist in the posts collection.`;
+  }
+  return `Could not load the post via WordPress REST (HTTP ${res.status}).`;
+}
+
+/** Resolve a WordPress post by numeric ID (skips slug lookup — use when WAF blocks list endpoints). */
+export async function resolvePostById(
   site: WPSite,
   postId: number,
-  fields: {
-    metadesc?: string;
-    focuskw?: string;
-    seoTitle?: string;
-  }
-): Promise<boolean> {
+  preferredCollection = "posts"
+): Promise<WPPostResolved | null> {
+  if (!Number.isFinite(postId) || postId <= 0) return null;
   const base = site.url.replace(/\/$/, "");
+  const collections = [
+    preferredCollection,
+    ...POST_LOOKUP_COLLECTIONS.filter((c) => c !== preferredCollection),
+  ];
+  for (const collection of collections) {
+    const detailPath = `wp/v2/${collection}/${postId}?context=view`;
+    let res = await wpFetch(wpRestUrl(base, detailPath), { headers: wpRestHeaders(site) });
+    if (!res.ok) {
+      res = await wpFetch(wpRestUrl(base, detailPath), { headers: publicRestHeaders() });
+    }
+    if (!res.ok) continue;
+    const data = (await res.json()) as WPRestPostRow;
+    if (!data?.id) continue;
+    return rowToResolved(data, collection);
+  }
+  return null;
+}
+
+/** Load full body text when slug listing omits content. */
+export async function enrichResolvedPostContent(
+  site: WPSite,
+  resolved: WPPostResolved
+): Promise<WPPostResolved> {
+  if (resolved.contentPlain.length >= 120) return resolved;
+  const base = site.url.replace(/\/$/, "");
+  const detailPath = `wp/v2/${resolved.restCollection}/${resolved.id}?context=view`;
+  let res = await wpFetch(wpRestUrl(base, detailPath), { headers: wpRestHeaders(site) });
+  if (!res.ok) {
+    res = await wpFetch(wpRestUrl(base, detailPath), { headers: publicRestHeaders() });
+  }
+  if (!res.ok) return resolved;
+  const data = (await res.json()) as WPRestPostRow;
+  return {
+    ...resolved,
+    title: stripRenderedHtml(data.title?.rendered ?? resolved.title),
+    excerptPlain: stripRenderedHtml(data.excerpt?.rendered ?? resolved.excerptPlain),
+    contentPlain: stripRenderedHtml(data.content?.rendered ?? resolved.contentPlain).slice(0, 8000),
+  };
+}
+
+function readRankMathFromMetaObject(meta: Record<string, unknown>): WPRankMathFields {
+  const str = (k: string) => {
+    const v = meta[k];
+    return typeof v === "string" ? v.trim() : "";
+  };
+  return {
+    focusKeyword: str("rank_math_focus_keyword"),
+    metaDescription: str("rank_math_description"),
+    seoTitle: str("rank_math_title"),
+  };
+}
+
+/** Read current Rank Math fields for a post (edit context). */
+export async function getPostRankMathFields(
+  site: WPSite,
+  postId: number,
+  restCollection = "posts"
+): Promise<WPRankMathFields> {
+  const base = site.url.replace(/\/$/, "");
+  const res = await wpFetch(wpRestUrl(base, `wp/v2/${restCollection}/${postId}?context=edit`), {
+    headers: wpRestHeaders(site),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`WP getPostRankMathFields failed: ${res.status} ${errText.slice(0, 400)}`);
+  }
+  const data = (await res.json()) as Record<string, unknown>;
+  const meta =
+    data.meta && typeof data.meta === "object" ? (data.meta as Record<string, unknown>) : {};
+  const fromMeta = readRankMathFromMetaObject(meta);
+  return {
+    focusKeyword: fromMeta.focusKeyword || String(data.rank_math_focus_keyword ?? "").trim(),
+    metaDescription: fromMeta.metaDescription || String(data.rank_math_description ?? "").trim(),
+    seoTitle: fromMeta.seoTitle || String(data.rank_math_title ?? "").trim(),
+  };
+}
+
+function buildRankMathMetaPayload(fields: {
+  metadesc?: string;
+  focuskw?: string;
+  seoTitle?: string;
+}): Record<string, string> {
   const meta: Record<string, string> = {};
   if (fields.metadesc != null && fields.metadesc !== "") {
     meta.rank_math_description = fields.metadesc.slice(0, 320);
@@ -732,13 +1202,128 @@ export async function updatePostRankMathMeta(
   if (fields.seoTitle != null && fields.seoTitle !== "") {
     meta.rank_math_title = fields.seoTitle.slice(0, 200);
   }
+  return meta;
+}
+
+function parseRankMathWriteResponse(
+  status: number,
+  body: string,
+  expectedKeys: string[]
+): { ok: boolean; detail?: string } {
+  if (status < 200 || status >= 300) {
+    return { ok: false, detail: body.trim().slice(0, 500) || `HTTP ${status}` };
+  }
+  const trimmed = body.trim();
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (parsed.success === true) return { ok: true };
+    const updated = parsed.updated;
+    if (updated && typeof updated === "object") {
+      const u = updated as Record<string, unknown>;
+      const ok = expectedKeys.every((k) => typeof u[k] === "string" && String(u[k]).trim().length > 0);
+      if (ok) return { ok: true };
+    }
+    // Rank Math updateMeta returns per-field booleans — require each expected field to be true.
+    const fieldOk = expectedKeys.every((k) => parsed[k] === true);
+    if (fieldOk) return { ok: true };
+    if (parsed.slug === true && expectedKeys.length === 0) return { ok: true };
+    return {
+      ok: false,
+      detail: `Rank Math did not confirm all fields (${expectedKeys.join(", ")}). Response: ${trimmed.slice(0, 400)}`,
+    };
+  } catch {
+    if (trimmed === "true") return { ok: true };
+    return { ok: false, detail: trimmed.slice(0, 400) };
+  }
+}
+
+/** Content Studio mu-plugin on weed.com (update_post_meta server-side). */
+async function updatePostRankMathViaWeedComTools(
+  site: WPSite,
+  postId: number,
+  meta: Record<string, string>
+): Promise<{ ok: boolean; detail?: string }> {
+  const base = site.url.replace(/\/$/, "");
+  const res = await wpFetch(wpRestUrl(base, `weed-com-tools/v1/rank-math/${postId}`), {
+    method: "POST",
+    headers: wpRestHeaders(site, { contentTypeJson: true }),
+    body: JSON.stringify(meta),
+  });
+  const text = await res.text();
+  return parseRankMathWriteResponse(res.status, text, Object.keys(meta));
+}
+
+/** Rank Math bulk endpoint — more reliable than updateMeta for focus keyword + description. */
+async function updatePostRankMathViaBulk(
+  site: WPSite,
+  postId: number,
+  meta: Record<string, string>
+): Promise<{ ok: boolean; detail?: string }> {
+  const base = site.url.replace(/\/$/, "");
+  const res = await wpFetch(wpRestUrl(base, "rankmath/v1/updateMetaBulk"), {
+    method: "POST",
+    headers: wpRestHeaders(site, { contentTypeJson: true }),
+    body: JSON.stringify({
+      rows: [{ objectType: "post", objectID: postId, meta }],
+    }),
+  });
+  const text = await res.text();
+  return parseRankMathWriteResponse(res.status, text, Object.keys(meta));
+}
+
+/** Rank Math single-post endpoint (editor); often only confirms permalink unless fields are whitelisted. */
+async function updatePostRankMathViaRankMathApi(
+  site: WPSite,
+  postId: number,
+  meta: Record<string, string>
+): Promise<{ ok: boolean; detail?: string }> {
+  const base = site.url.replace(/\/$/, "");
+  const res = await wpFetch(wpRestUrl(base, "rankmath/v1/updateMeta"), {
+    method: "POST",
+    headers: wpRestHeaders(site, { contentTypeJson: true }),
+    body: JSON.stringify({
+      objectType: "post",
+      objectID: postId,
+      meta,
+    }),
+  });
+  const text = await res.text();
+  return parseRankMathWriteResponse(res.status, text, Object.keys(meta));
+}
+
+/** Rank Math SEO post meta — prefers Rank Math /updateMeta, then WP REST fallbacks. */
+export async function updatePostRankMathMeta(
+  site: WPSite,
+  postId: number,
+  fields: {
+    metadesc?: string;
+    focuskw?: string;
+    seoTitle?: string;
+  },
+  opts?: { restCollection?: string }
+): Promise<boolean> {
+  const base = site.url.replace(/\/$/, "");
+  const collection = (opts?.restCollection ?? "posts").replace(/^\/+|\/+$/g, "");
+  const meta = buildRankMathMetaPayload(fields);
   if (Object.keys(meta).length === 0) return true;
+
+  const strategies: Array<{ name: string; run: () => Promise<{ ok: boolean; detail?: string }> }> = [
+    { name: "weed-com-tools/v1/rank-math", run: () => updatePostRankMathViaWeedComTools(site, postId, meta) },
+    { name: "rankmath/v1/updateMetaBulk", run: () => updatePostRankMathViaBulk(site, postId, meta) },
+    { name: "rankmath/v1/updateMeta", run: () => updatePostRankMathViaRankMathApi(site, postId, meta) },
+  ];
+
+  for (const strategy of strategies) {
+    const result = await strategy.run();
+    if (result.ok) return true;
+    if (result.detail) {
+      console.warn(`[updatePostRankMathMeta] ${strategy.name} failed:`, result.detail);
+    }
+  }
+
   const payloads: Array<Record<string, unknown>> = [
-    // Standard REST meta payload (works when keys are registered with show_in_rest).
     { meta },
-    // Some installs/plugins honor meta_input in REST update.
     { meta_input: meta },
-    // Fallback for sites/plugins that map top-level keys.
     {
       rank_math_title: meta.rank_math_title,
       rank_math_description: meta.rank_math_description,
@@ -747,18 +1332,29 @@ export async function updatePostRankMathMeta(
   ];
 
   for (let i = 0; i < payloads.length; i++) {
-    const res = await wpFetch(wpRestUrl(base, `wp/v2/posts/${postId}`), {
+    const res = await wpFetch(wpRestUrl(base, `wp/v2/${collection}/${postId}`), {
       method: "POST",
       headers: wpRestHeaders(site, { contentTypeJson: true }),
       body: JSON.stringify(payloads[i]),
     });
-    if (res.ok) return true;
-    const errText = await res.text();
-    console.warn(`[updatePostRankMathMeta] attempt ${i + 1} failed: ${res.status} ${errText}`);
+    const text = await res.text();
+    if (res.ok) {
+      const after = await getPostRankMathFields(site, postId, collection).catch(() => null);
+      if (after) {
+        const focusOk = !meta.rank_math_focus_keyword || after.focusKeyword === meta.rank_math_focus_keyword;
+        const descOk = !meta.rank_math_description || after.metaDescription === meta.rank_math_description;
+        if (focusOk && descOk) return true;
+      }
+      console.warn(
+        `[updatePostRankMathMeta] wp/v2 attempt ${i + 1} returned ${res.status} but Rank Math fields were not readable back`
+      );
+      continue;
+    }
+    console.warn(`[updatePostRankMathMeta] wp/v2 attempt ${i + 1} failed: ${res.status} ${text.slice(0, 400)}`);
   }
 
   console.warn(
-    "[updatePostRankMathMeta] Rank Math fields not persisted. Ensure rank_math_* meta keys are registered for REST on this WordPress site."
+    "[updatePostRankMathMeta] Rank Math fields not persisted. Ensure /wp-json/rankmath/v1/updateMeta is allowed through Cloudflare/WAF."
   );
   return false;
 }
