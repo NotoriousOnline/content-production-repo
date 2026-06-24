@@ -46,6 +46,19 @@ function parseOverloadedFromMessage(err: unknown): boolean {
   return false;
 }
 
+/** Billing / credit errors — retries will not help; callers should use a non-Claude fallback. */
+export function isAnthropicBillingError(err: unknown): boolean {
+  const status = anthropicHttpStatus(err);
+  if (status === 402 || status === 403) return true;
+  const lower = errorMessage(err).toLowerCase();
+  return (
+    lower.includes("credit balance") ||
+    lower.includes("insufficient credit") ||
+    lower.includes("purchase credits") ||
+    lower.includes("plans & billing")
+  );
+}
+
 /** True when a route should use HTTP 503 instead of 500. */
 export function isClaudeServiceUnavailableError(err: unknown): boolean {
   if (errorMessage(err) === CLAUDE_OVERLOAD_USER_MESSAGE) return true;

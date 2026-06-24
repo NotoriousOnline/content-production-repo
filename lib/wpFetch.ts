@@ -6,9 +6,51 @@
 import dns from "node:dns";
 import Undici, { Agent, fetch as undiciFetch, interceptors } from "undici";
 import type { Agent as AgentType } from "undici";
+import { errorMessage } from "@/lib/serverLog";
 
 if (typeof dns.setDefaultResultOrder === "function") {
   dns.setDefaultResultOrder("ipv4first");
+}
+
+function envMs(key: string, fallback: number): number {
+  const raw = (process.env[key] ?? "").trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/** Undici default connect timeout is 10s — too short for Cloudflare/WAF handshakes. */
+const WP_CONNECT_TIMEOUT_MS = envMs("WORDPRESS_REST_CONNECT_TIMEOUT_MS", 60_000);
+const WP_HEADERS_TIMEOUT_MS = envMs("WORDPRESS_REST_HEADERS_TIMEOUT_MS", 120_000);
+const WP_BODY_TIMEOUT_MS = envMs("WORDPRESS_REST_BODY_TIMEOUT_MS", 300_000);
+const WP_FETCH_MAX_ATTEMPTS = envMs("WORDPRESS_REST_FETCH_RETRIES", 3);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export function isTransientWpNetworkError(err: unknown): boolean {
+  const msg = errorMessage(err).toLowerCase();
+  return (
+    msg.includes("connect timeout") ||
+    msg.includes("und_err_connect_timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("etimedout") ||
+    msg.includes("socket hang up") ||
+    msg.includes("network socket disconnected") ||
+    (msg.includes("fetch failed") && msg.includes("timeout"))
+  );
+}
+
+export function formatWpNetworkErrorHint(err: unknown): string {
+  const msg = errorMessage(err);
+  if (!isTransientWpNetworkError(err)) return msg;
+  const waf =
+    (process.env.WORDPRESS_WAF_BYPASS_COOKIE ?? "").trim() ||
+    (process.env.WORDPRESS_WAF_BYPASS_QUERY ?? "").trim()
+      ? " WAF bypass env is set but the host still timed out — confirm the rule matches this site and /wp-json/."
+      : " If the site uses Cloudflare, set WORDPRESS_WAF_BYPASS_COOKIE or allowlist this server in the WAF.";
+  return `${msg} WordPress REST connection timed out after retries.${waf}`;
 }
 
 function dnsDohFallbackEnabled(): boolean {
@@ -101,6 +143,9 @@ export function getWpFetchDispatcher(): AgentType {
   if (!wpAgent) {
     wpAgent = new Agent({
       maxRedirections: 5,
+      connectTimeout: WP_CONNECT_TIMEOUT_MS,
+      headersTimeout: WP_HEADERS_TIMEOUT_MS,
+      bodyTimeout: WP_BODY_TIMEOUT_MS,
       interceptors: {
         Agent: [
           Undici.createRedirectInterceptor({ maxRedirections: 5 }),
@@ -115,10 +160,29 @@ export function getWpFetchDispatcher(): AgentType {
   return wpAgent;
 }
 
-export function wpFetch(...args: Parameters<typeof undiciFetch>): ReturnType<typeof undiciFetch> {
-  const [input, init] = args;
-  return undiciFetch(input, {
-    ...init,
-    dispatcher: getWpFetchDispatcher(),
-  });
+export async function wpFetch(
+  input: Parameters<typeof undiciFetch>[0],
+  init?: Parameters<typeof undiciFetch>[1]
+): Promise<Awaited<ReturnType<typeof undiciFetch>>> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < WP_FETCH_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await undiciFetch(input, {
+        ...init,
+        dispatcher: getWpFetchDispatcher(),
+      });
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientWpNetworkError(err) || attempt >= WP_FETCH_MAX_ATTEMPTS - 1) {
+        throw err;
+      }
+      const wait = Math.min(30_000, 2500 * 2 ** attempt);
+      console.warn(
+        `[wpFetch] transient error (attempt ${attempt + 1}/${WP_FETCH_MAX_ATTEMPTS}), retry in ${wait}ms:`,
+        errorMessage(err)
+      );
+      await sleep(wait);
+    }
+  }
+  throw lastErr;
 }

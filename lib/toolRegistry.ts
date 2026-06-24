@@ -7,6 +7,12 @@ import { config as socialAutomationConfig } from "@/tools/social-automation/conf
 import SocialAutomationTool from "@/tools/social-automation/index";
 import { config as weedComContentProductionConfig } from "@/tools/weed-com-content-production/config";
 import WeedComContentProductionTool from "@/tools/weed-com-content-production/index";
+import { config as weedComRankMathConfig } from "@/tools/weed-com-rank-math/config";
+import WeedComRankMathTool from "@/tools/weed-com-rank-math/index";
+import { config as weedComStrainPageConfig } from "@/tools/weed-com-strain-page/config";
+import WeedComStrainPageTool from "@/tools/weed-com-strain-page/index";
+import { config as weedComStrainComparisonConfig } from "@/tools/weed-com-strain-comparison/config";
+import WeedComStrainComparisonTool from "@/tools/weed-com-strain-comparison/index";
 
 export type ToolConfig = {
   slug: string;
@@ -35,6 +41,24 @@ export const tools: ToolConfig[] = [
     icon: weedComContentProductionConfig.icon,
   },
   {
+    slug: weedComRankMathConfig.slug,
+    name: weedComRankMathConfig.name,
+    description: weedComRankMathConfig.description,
+    icon: weedComRankMathConfig.icon,
+  },
+  {
+    slug: weedComStrainComparisonConfig.slug,
+    name: weedComStrainComparisonConfig.name,
+    description: weedComStrainComparisonConfig.description,
+    icon: weedComStrainComparisonConfig.icon,
+  },
+  {
+    slug: weedComStrainPageConfig.slug,
+    name: weedComStrainPageConfig.name,
+    description: weedComStrainPageConfig.description,
+    icon: weedComStrainPageConfig.icon,
+  },
+  {
     slug: socialAutomationConfig.slug,
     name: socialAutomationConfig.name,
     description: socialAutomationConfig.description,
@@ -46,6 +70,9 @@ const componentMap: Record<string, ComponentType> = {
   "article-title-discovery": ArticleTitleDiscoveryTool,
   "content-production": ContentProductionTool,
   "weed-com-content-production": WeedComContentProductionTool,
+  "weed-com-rank-math": WeedComRankMathTool,
+  "weed-com-strain-comparison": WeedComStrainComparisonTool,
+  "weed-com-strain-page": WeedComStrainPageTool,
   "social-automation": SocialAutomationTool,
 };
 

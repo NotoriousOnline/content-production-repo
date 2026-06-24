@@ -17,6 +17,10 @@ import {
   type TabibiPmidEntry,
 } from "@/lib/tabibiPmidDatabase";
 import { appendTabibiSourcesFooter, pickTabibiSourcesForFooter } from "@/lib/tabibiSourcesFooter";
+import {
+  ensureWeedLearnComplete,
+  maxTokensForWeedArticleHtml,
+} from "@/lib/contentProduction/weedLearnCompleteness";
 import { getSiteById, WP_TOOL_SCOPE, type WPToolScope } from "@/lib/wpSites";
 import { fetchAllProductsForLinkLibrary, getPosts } from "@/lib/wordpressClient";
 
@@ -116,7 +120,7 @@ async function normalizeWordCountIfNeeded(
   const direction = current < min ? "expand" : "trim";
   const weedSafety =
     toolScope === WP_TOOL_SCOPE.weedComContentProduction
-      ? " Keep Weed.com Learn compliance sections intact: Expert Insight blocks, FAQ, optional amber disclaimer when relevant, Sources, and legal footer."
+      ? " Keep Weed.com Learn compliance sections intact: Expert Insight blocks, FAQ (every question must have a complete answer — never leave the last FAQ unanswered), optional amber disclaimer when relevant, Sources, and legal footer. Never truncate mid-FAQ."
       : "";
   const instructions = `Adjust only the article length to approximately ${targetWordCount} words (acceptable range ${min}-${max}). Current count is ${current}, so ${direction} where needed. Preserve the same structure, links, sections, and meaning.${weedSafety}`;
 
@@ -141,42 +145,6 @@ Output the complete revised HTML only. No markdown code fences.`;
     return cleaned || html;
   } catch (e) {
     console.warn("[generate-content] Word-count normalization skipped:", errorMessage(e));
-    return html;
-  }
-}
-
-/** Second pass when the first response hits max_tokens before FAQ/footer (common with long body + inline HTML). */
-const WEED_LEARN_APPEND_SYSTEM = `You complete truncated Weed.com Learn blog HTML. Output raw HTML only (no markdown fences, no em dash U+2014).
-
-The user message has TITLE, KEYWORDS, and the TAIL of an article that stopped before the FAQ block or mid-sentence.
-
-Output ONLY the continuation to append (do not repeat earlier paragraphs):
-1) If the tail ends inside an open <p> without </p>, write the minimal words to finish the sentence, then </p>.
-2) Then append FAQ (Bible outer div with Inter font-family, <h2>Frequently asked questions</h2>, then each <h3> + <p>) + amber disclaimer when relevant + legal footer only. Do NOT add a Sources HTML block (the server appends Sources from the Tabibi JSON). Amber box, FAQ wrapper, and footer: Bible inline style= templates with Inter for all text; copy style attributes exactly.
-3) 3 to 5 FAQ pairs (exact count will be specified by caller); answers ~24-45 words each (concise, relevant, practical).
-4) Legal footer: REQUIRED — must include verbatim "For adults 21+ only. Cannabis laws vary by state." plus 911/emergency room routing in the Bible <p> template. Never omit the legal footer.`;
-
-async function finalizeWeedLearnHtml(
-  html: string,
-  title: string,
-  keywords: string[]
-): Promise<string> {
-  const hasFaq = /Frequently asked questions/i.test(html);
-  const hasFooter = /For adults 21\+ only/i.test(html);
-  if (hasFaq && hasFooter) return html;
-
-  const tail = html.length > 20000 ? html.slice(-20000) : html;
-  const user = `Title: ${title}\nKeywords: ${keywords.join(", ")}\n\n----- TRUNCATED HTML (append after this) -----\n${tail}`;
-  try {
-    const extra = await callClaude(WEED_LEARN_APPEND_SYSTEM, user, { maxTokens: 6144 });
-    const cleaned = replaceEmDashes(stripHtmlCodeFences(extra.trim()));
-    if (!cleaned) return html;
-    console.warn(
-      "[generate-content] Weed Learn: first pass missing FAQ heading or legal footer; appended continuation pass"
-    );
-    return `${html.trimEnd()}\n${cleaned}`;
-  } catch (e) {
-    console.error("[generate-content] Weed Learn continuation failed:", errorMessage(e));
     return html;
   }
 }
@@ -785,13 +753,19 @@ Output the complete revised HTML only. No markdown code fences.`;
 
     const userMessage = isRefinement ? refinementUserMessage : initialDraftUserMessage;
 
+    const weedFaqTarget = faqCount ?? 5;
+    const outputMaxTokens =
+      toolScope === WP_TOOL_SCOPE.weedComContentProduction
+        ? maxTokensForWeedArticleHtml(wordCount)
+        : maxTokensForArticleHtml(wordCount);
+
     const raw = await callClaude(systemPrompt, userMessage, {
-      maxTokens: maxTokensForArticleHtml(wordCount),
+      maxTokens: outputMaxTokens,
     });
     let content = stripLeadingPostTitleH1(replaceEmDashes(stripHtmlCodeFences(raw)));
 
     if (toolScope === WP_TOOL_SCOPE.weedComContentProduction) {
-      content = await finalizeWeedLearnHtml(content, title, keywords);
+      content = await ensureWeedLearnComplete(content, title, keywords, weedFaqTarget, wordCount);
       content = lockExpertBoxTypography(content);
       if (tabibiForArticle.length > 0) {
         content = appendTabibiSourcesFooter(content, tabibiForArticle);
@@ -800,6 +774,7 @@ Output the complete revised HTML only. No markdown code fences.`;
 
     content = await normalizeWordCountIfNeeded(content, title, keywords, wordCount, toolScope);
     if (toolScope === WP_TOOL_SCOPE.weedComContentProduction) {
+      content = await ensureWeedLearnComplete(content, title, keywords, weedFaqTarget, wordCount);
       content = lockExpertBoxTypography(content);
       if (tabibiForArticle.length > 0) {
         content = appendTabibiSourcesFooter(content, tabibiForArticle);

@@ -51,6 +51,18 @@ function parseTime(pubDate: string): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+/** Skip photo credits, JS fragments, and other non-headline anchor text from HTML scrapers. */
+export function isPlausibleArticleTitle(title: string): boolean {
+  const t = title.trim();
+  if (t.length < 20 || t.length > 220) return false;
+  if (/function\s+\w+|=>|{\s*const|onerror|removeAttribute/i.test(t)) return false;
+  if (/^[\w.]+\/(Reuters|AP|Getty|WHOI)/i.test(t)) return false;
+  if (/^[\w.]+\s*\/\s*(Reuters|AP|Getty)/i.test(t)) return false;
+  if (/^\d+:\d+$/.test(t)) return false; // video duration only
+  if ((t.match(/\//g) ?? []).length >= 3 && t.length < 80) return false; // photo credit paths
+  return true;
+}
+
 function parseItemsFromXml(xml: string, source: string): DiscoveryArticle[] {
   const articles: DiscoveryArticle[] = [];
   const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi;
@@ -60,7 +72,7 @@ function parseItemsFromXml(xml: string, source: string): DiscoveryArticle[] {
     const title = extractTagContent(itemXml, "title");
     const url = extractLink(itemXml);
     const pubDate = extractTagContent(itemXml, "pubDate");
-    if (title && url) {
+    if (title && url && isPlausibleArticleTitle(title)) {
       articles.push({
         title,
         url: canonicalizeUrl(url),
@@ -79,7 +91,7 @@ function parseItemsFromXml(xml: string, source: string): DiscoveryArticle[] {
       extractTagContent(entryXml, "updated") ??
       extractTagContent(entryXml, "published") ??
       extractTagContent(entryXml, "pubDate");
-    if (title && url) {
+    if (title && url && isPlausibleArticleTitle(title)) {
       articles.push({
         title,
         url: canonicalizeUrl(url),
@@ -141,6 +153,7 @@ function parseCnnHtmlArticles(html: string, source: string): DiscoveryArticle[] 
     const hrefRaw = m[1] ?? "";
     const textRaw = (m[2] ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
     if (!hrefRaw || !textRaw) continue;
+    if (!isPlausibleArticleTitle(textRaw)) continue;
     let href = hrefRaw.trim();
     if (href.startsWith("/")) href = `https://www.cnn.com${href}`;
     if (!/^https?:\/\/(www\.)?cnn\.com\//i.test(href)) continue;

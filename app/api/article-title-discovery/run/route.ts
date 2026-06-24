@@ -78,26 +78,37 @@ export async function GET(request: Request) {
     );
   }
   if (!generateRes.ok) {
-    console.error("[article-title-discovery/run] Generate titles failed:", generateRes.status);
+    const errBody = (await generateRes.json().catch(() => ({}))) as { error?: string };
+    console.error("[article-title-discovery/run] Generate titles failed:", generateRes.status, errBody);
     void serverLog({
       level: "error",
       source: "article-title-discovery/run",
-      message: `generate-titles HTTP ${generateRes.status}`,
+      message: `generate-titles HTTP ${generateRes.status}: ${errBody.error ?? ""}`,
     });
     return NextResponse.json(
-      { success: false, error: "Generate titles failed" },
-      { status: 502 }
+      {
+        success: false,
+        error: errBody.error ?? "Generate titles failed — check OPENAI_API_KEY or ANTHROPIC_API_KEY billing.",
+      },
+      { status: generateRes.status >= 400 ? generateRes.status : 502 }
     );
   }
-  const results = await generateRes.json();
+  const generatePayload = (await generateRes.json()) as {
+    results?: unknown[];
+    warning?: string;
+    provider?: string;
+  };
+  const results = Array.isArray(generatePayload.results) ? generatePayload.results : [];
+  const generateWarning = generatePayload.warning;
   console.log("[article-title-discovery/run] Generated", results.length, "titles");
 
   if (results.length === 0) {
     return NextResponse.json({
-      success: true,
+      success: false,
+      error: "No titles were generated. Check API keys and billing (OpenAI or Anthropic).",
       count: 0,
       results: [],
-    });
+    }, { status: 503 });
   }
 
   console.log("[article-title-discovery/run] Step 3: Sending to Slack...");
@@ -141,5 +152,7 @@ export async function GET(request: Request) {
     success: true,
     count: results.length,
     results,
+    ...(generateWarning ? { warning: generateWarning } : {}),
+    ...(generatePayload.provider ? { provider: generatePayload.provider } : {}),
   });
 }

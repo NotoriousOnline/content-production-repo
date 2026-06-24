@@ -58,6 +58,7 @@ type DiscoveryInfo = {
 export default function ArticleTitleDiscoveryTool() {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<ResultItem[]>([]);
   const [lastRun, setLastRun] = useState<Date | null>(null);
@@ -96,6 +97,7 @@ export default function ArticleTitleDiscoveryTool() {
   const handleRun = async () => {
     setLoading(true);
     setSuccess(null);
+    setWarning(null);
     setError(null);
     try {
       const res = await fetch("/api/article-title-discovery/run");
@@ -106,7 +108,8 @@ export default function ArticleTitleDiscoveryTool() {
       }
       setResults(data.results ?? []);
       setLastRun(new Date());
-      setSuccess(`Done — ${data.count ?? 0} title ideas sent to Slack`);
+      if (data.warning) setWarning(data.warning);
+      setSuccess(`Done — ${data.count ?? 0} title ideas sent to Slack${data.provider ? ` (via ${data.provider})` : ""}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
@@ -211,6 +214,11 @@ export default function ArticleTitleDiscoveryTool() {
         {success && (
           <div className="mt-4 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800">
             {success}
+          </div>
+        )}
+        {warning && (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            {warning}
           </div>
         )}
         {error && (
