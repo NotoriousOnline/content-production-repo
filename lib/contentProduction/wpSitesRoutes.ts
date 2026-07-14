@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { describeFetchError, explainSupabaseReachabilityError } from "@/lib/serverFetch";
 import { errorMessage, serverLog } from "@/lib/serverLog";
+import { normalizeShopifyShopHost, testShopifyConnection } from "@/lib/shopifyClient";
 import { wpRestHeaders, wpRestUrl } from "@/lib/wordpressClient";
 import { wpFetch } from "@/lib/wpFetch";
-import { createSite, getSites, type CreateSiteData, type WPToolScope } from "@/lib/wpSites";
+import { createSite, getSites, WP_TOOL_SCOPE, type CreateSiteData, type WPToolScope } from "@/lib/wpSites";
 
 const MASKED_PASSWORD = "••••••••";
 
@@ -12,8 +13,17 @@ function normalizeSiteUrl(url: string): string {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
+function normalizeShopifySiteUrl(url: string): string {
+  const host = normalizeShopifyShopHost(url);
+  return `https://${host}`;
+}
+
 function maskSite<T extends { app_password?: string }>(site: T): Omit<T, "app_password"> & { app_password: string } {
   return { ...site, app_password: MASKED_PASSWORD };
+}
+
+function isShopifyScope(scope: WPToolScope): boolean {
+  return scope === WP_TOOL_SCOPE.farmComContentProduction;
 }
 
 async function testWordPressConnection(
@@ -76,9 +86,47 @@ export async function handleSitesPOST(request: Request, scope: WPToolScope) {
 
     if (!name || !url || !username || !app_password) {
       return NextResponse.json(
-        { error: "Missing required fields: name, url, username, app_password" },
+        {
+          error: isShopifyScope(scope)
+            ? "Missing required fields: name, shop URL, blog ID, Admin API access token"
+            : "Missing required fields: name, url, username, app_password",
+        },
         { status: 400 }
       );
+    }
+
+    if (isShopifyScope(scope)) {
+      const normalizedUrl = normalizeShopifySiteUrl(String(url));
+      const blogId = String(username).trim();
+      if (!/^\d+$/.test(blogId) && !blogId.startsWith("gid://shopify/Blog/")) {
+        return NextResponse.json(
+          {
+            error:
+              "Blog ID must be the numeric Shopify blog id (from Online Store → Blog) or a gid://shopify/Blog/… value.",
+          },
+          { status: 400 }
+        );
+      }
+      const conn = await testShopifyConnection(normalizedUrl, blogId, String(app_password));
+      if (!conn.ok) {
+        const hint = conn.detail ? ` (${conn.detail})` : "";
+        return NextResponse.json(
+          {
+            error: `Could not connect to Shopify${hint}. Use your *.myshopify.com host, a custom app Admin API access token with write_content (or write_online_store_pages), and a valid Blog ID.`,
+          },
+          { status: 400 }
+        );
+      }
+
+      const data: CreateSiteData = {
+        name,
+        url: normalizedUrl,
+        username: blogId.replace(/^gid:\/\/shopify\/Blog\//, ""),
+        app_password,
+        tone_prompt: tone_prompt ?? undefined,
+      };
+      const site = await createSite(data, scope);
+      return NextResponse.json(maskSite(site));
     }
 
     const normalizedUrl = normalizeSiteUrl(String(url));

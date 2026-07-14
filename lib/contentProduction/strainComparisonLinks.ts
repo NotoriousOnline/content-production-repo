@@ -243,21 +243,42 @@ export function ensureStrainComparisonInternalLinks(
     (l) => l.kind === "product" || (l.kind === "shop" && !/\/seeds\/?$/i.test(l.url))
   );
 
-  if (strainALink) {
-    const h2 = new RegExp(`<h2[^>]*>\\s*What Is ${escapeRegex(a)}\\s*\\?\\s*</h2>`, "i");
-    const section = sectionAfterH2(result, h2);
+  const h2Matches = Array.from(result.matchAll(/<h2\b[^>]*>[\s\S]*?<\/h2>/gi));
+
+  const findH2Pattern = (predicate: (headingHtml: string, index: number) => boolean): RegExp | null => {
+    for (let i = 0; i < h2Matches.length; i++) {
+      const m = h2Matches[i];
+      if (predicate(m[0], i)) {
+        const escaped = m[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(escaped, "i");
+      }
+    }
+    return null;
+  };
+
+  const strainAH2 =
+    findH2Pattern((h) => new RegExp(escapeRegex(a), "i").test(h) && !new RegExp(escapeRegex(b), "i").test(h)) ??
+    findH2Pattern((h, i) => i === 0 && new RegExp(escapeRegex(a), "i").test(h));
+  const strainBH2 =
+    findH2Pattern(
+      (h, i) =>
+        new RegExp(escapeRegex(b), "i").test(h) &&
+        (!new RegExp(escapeRegex(a), "i").test(h) || i > 0)
+    ) ?? findH2Pattern((h) => new RegExp(escapeRegex(b), "i").test(h));
+
+  if (strainALink && strainAH2) {
+    const section = sectionAfterH2(result, strainAH2);
     if (section && !sectionHasLinkTo(section, strainALink.url, siteOrigin)) {
       const suffix = `For a deeper profile, see our <a href="${strainALink.url}">${a} guide</a>.`;
-      result = replaceSectionAfterH2(result, h2, appendToFirstParagraph(section, suffix));
+      result = replaceSectionAfterH2(result, strainAH2, appendToFirstParagraph(section, suffix));
     }
   }
 
-  if (strainBLink) {
-    const h2 = new RegExp(`<h2[^>]*>\\s*What Is ${escapeRegex(b)}\\s*\\?\\s*</h2>`, "i");
-    const section = sectionAfterH2(result, h2);
+  if (strainBLink && strainBH2) {
+    const section = sectionAfterH2(result, strainBH2);
     if (section && !sectionHasLinkTo(section, strainBLink.url, siteOrigin)) {
       const suffix = `Explore effects and lineage on the <a href="${strainBLink.url}">${b} page</a>.`;
-      result = replaceSectionAfterH2(result, h2, appendToFirstParagraph(section, suffix));
+      result = replaceSectionAfterH2(result, strainBH2, appendToFirstParagraph(section, suffix));
     }
   }
 
@@ -267,7 +288,9 @@ export function ensureStrainComparisonInternalLinks(
     result = replaceIntro(result, appendToFirstParagraph(introMatch[1], suffix));
   }
 
-  const effectsH2 = /<h2[^>]*>\s*Effects Comparison\s*<\/h2>/i;
+  const effectsH2 =
+    findH2Pattern((h) => /effect|feel|high|experience|onset|body|head/i.test(h)) ??
+    /<h2[^>]*>\s*Effects Comparison\s*<\/h2>/i;
   const effectsSection = sectionAfterH2(result, effectsH2);
   if (effectsSection && editorial.length > 0) {
     const missingEditorial = editorial.filter((l) => !sectionHasLinkTo(effectsSection, l.url, siteOrigin));
@@ -278,7 +301,9 @@ export function ensureStrainComparisonInternalLinks(
     }
   }
 
-  const useCaseH2 = /<h2[^>]*>\s*Which Strain Is Better for/i;
+  const useCaseH2 =
+    findH2Pattern((h) => /better for|which|choose|pick|winner|right for|best for/i.test(h)) ??
+    /<h2[^>]*>\s*Which Strain Is Better for/i;
   const useCaseSection = sectionAfterH2(result, useCaseH2);
   if (useCaseSection && editorial.length > 1) {
     const linkedInEffects = editorial[0];
@@ -289,10 +314,9 @@ export function ensureStrainComparisonInternalLinks(
     }
   }
 
-  const buyH2 = new RegExp(
-    `<h2[^>]*>\\s*Where to Buy ${escapeRegex(a)} and ${escapeRegex(b)}`,
-    "i"
-  );
+  const buyH2 =
+    findH2Pattern((h) => /buy|shop|where to|get .+strain|purchase/i.test(h)) ??
+    new RegExp(`<h2[^>]*>\\s*Where to Buy ${escapeRegex(a)} and ${escapeRegex(b)}`, "i");
   const buySection = sectionAfterH2(result, buyH2);
   if (buySection && shopLinks.length > 0) {
     const missingShop = shopLinks.filter((l) => !sectionHasLinkTo(buySection, l.url, siteOrigin));

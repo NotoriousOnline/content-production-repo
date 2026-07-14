@@ -1,0 +1,29 @@
+{
+  "block": [
+    "in today'?s (fast-?paced|digital|modern) world",
+    "it'?s (important|worth) (to note|noting) that",
+    "\\bdelve into\\b",
+    "navigat(e|ing) the (landscape|complexities)",
+    "when it comes to",
+    "in the (ever-?evolving|rapidly changing)",
+    "unlock(ing)? the (power|potential|secrets)",
+    "harness(ing)? the power",
+    "\\bat the end of the day\\b",
+    "\\bin conclusion\\b",
+    "\\bto sum(?: it)? up\\b",
+    "plays? a (crucial|vital|pivotal|key) role",
+    "\\bgame-?changer\\b",
+    "revolutioni[sz]e",
+    "elevate your",
+    "not only .{1,40} but also"
+  ],
+  "warn": [
+    "\\bfurthermore\\b",
+    "\\bmoreover\\b",
+    "\\badditionally\\b",
+    "\\bleverage\\b",
+    "\\brobust\\b",
+    "\\bseamless(ly)?\\b",
+    "\\bcutting-?edge\\b"
+  ]
+}

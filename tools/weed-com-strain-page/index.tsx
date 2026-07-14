@@ -7,7 +7,7 @@ import { config } from "./config";
 
 type Site = { id: string; name: string; url: string };
 
-type StrainListItem = { id: number; title: string; slug: string; link: string; status: string; restCollection: string };
+const REST_COLLECTION_OPTIONS = ["strains", "strain", "posts", "pages"] as const;
 
 type GenerateResult = {
   title: string;
@@ -46,6 +46,7 @@ type PublishResult = {
 };
 
 const WORD_COUNT = 700;
+type WorkflowMode = "new" | "update";
 
 function imageDataUrl(img: ImageItem): string {
   return `data:${img.mimeType || "image/png"};base64,${img.base64}`;
@@ -178,13 +179,12 @@ function CustomFieldsSummary({ fields }: { fields: StrainPageCustomFields }) {
 export default function WeedComStrainPageTool() {
   const [sites, setSites] = useState<Site[]>([]);
   const [siteId, setSiteId] = useState("");
-  const [strainName, setStrainName] = useState("Blue Dream");
+  const [strainName, setStrainName] = useState("");
   const [strainUrl, setStrainUrl] = useState("");
   const [lineageNotes, setLineageNotes] = useState("");
   const [postId, setPostId] = useState<number | "">("");
-  const [restCollection, setRestCollection] = useState("posts");
-  const [strainList, setStrainList] = useState<StrainListItem[]>([]);
-  const [listLoading, setListLoading] = useState(false);
+  const [restCollection, setRestCollection] = useState("strains");
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("new");
   const [contentLoading, setContentLoading] = useState(false);
   const [imagesLoading, setImagesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -200,6 +200,14 @@ export default function WeedComStrainPageTool() {
   const [regenerateError, setRegenerateError] = useState<{ index: number; message: string } | null>(null);
 
   const busy = contentLoading || imagesLoading || publishStep != null || regeneratingIndex != null;
+  const isNewStrain = workflowMode === "new";
+  const isUpdateMode = workflowMode === "update";
+  const updateReady =
+    isUpdateMode &&
+    strainName.trim().length > 0 &&
+    strainUrl.trim().length > 0 &&
+    typeof postId === "number" &&
+    postId > 0;
 
   useEffect(() => {
     void (async () => {
@@ -217,31 +225,57 @@ export default function WeedComStrainPageTool() {
     })();
   }, []);
 
-  const loadStrainList = async () => {
+  useEffect(() => {
     if (!siteId) return;
-    setListLoading(true);
-    try {
-      const res = await fetch(`/api/weed-com-strain-page/strains?siteId=${encodeURIComponent(siteId)}&perPage=100`);
-      const data = (await res.json()) as { strains?: StrainListItem[]; restCollection?: string; error?: string };
-      if (res.ok && Array.isArray(data.strains)) {
-        setStrainList(data.strains);
-        if (typeof data.restCollection === "string") setRestCollection(data.restCollection);
-      } else {
-        setError(data.error ?? "Failed to load strain list");
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load strains");
-    } finally {
-      setListLoading(false);
-    }
+    setWorkflowMode("new");
+    setStrainName("");
+    setStrainUrl("");
+    setPostId("");
+    setRestCollection("strains");
+    setLineageNotes("");
+    setResult(null);
+    setImages(null);
+    setPublishResult(null);
+  }, [siteId]);
+
+  const resetGeneratedOutput = () => {
+    setResult(null);
+    setImages(null);
+    setPublishResult(null);
+    setImagesError(null);
+    setRegeneratePanelIndex(null);
+    setRegenerateExtraNotes("");
+    setRegenerateError(null);
   };
 
-  const selectExistingStrain = (item: StrainListItem) => {
-    const name = item.title.replace(/\s+strain\s*$/i, "").trim() || item.slug.replace(/-strain$/, "").replace(/-/g, " ");
-    setStrainName(name);
-    setStrainUrl(item.link);
-    setPostId(item.id);
-    setRestCollection(item.restCollection);
+  const switchToNewMode = () => {
+    setWorkflowMode("new");
+    setStrainName("");
+    setStrainUrl("");
+    setPostId("");
+    setRestCollection("strains");
+    setLineageNotes("");
+    resetGeneratedOutput();
+    setError(null);
+  };
+
+  const switchToUpdateMode = () => {
+    setWorkflowMode("update");
+    setStrainName("");
+    setStrainUrl("");
+    setPostId("");
+    setRestCollection("strains");
+    setLineageNotes("");
+    resetGeneratedOutput();
+    setError(null);
+  };
+
+  const startNewStrain = () => {
+    switchToNewMode();
+  };
+
+  const startUpdateAnother = () => {
+    switchToUpdateMode();
   };
 
   const generateImages = async (contentResult: GenerateResult) => {
@@ -386,7 +420,7 @@ export default function WeedComStrainPageTool() {
           customFields: result.customFields,
           images: uploadedRefs,
           slug: result.slug,
-          ...(postId ? { postId, restCollection } : {}),
+          ...(!isNewStrain && postId ? { postId, restCollection } : {}),
           rankMath: {
             focuskw: result.seo.focusKeyword,
             seoTitle: result.seo.metaTitle,
@@ -400,7 +434,11 @@ export default function WeedComStrainPageTool() {
         return;
       }
       setPublishResult(data);
-      if (data.postId) setPostId(data.postId);
+      if (data.postId) {
+        setPostId(data.postId);
+        if (data.postUrl) setStrainUrl(data.postUrl);
+        if (isNewStrain) setWorkflowMode("update");
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Publish failed");
     } finally {
@@ -475,68 +513,111 @@ export default function WeedComStrainPageTool() {
           </select>
         </div>
 
-        <div className="flex flex-wrap items-end gap-2">
-          <button
-            type="button"
-            onClick={() => void loadStrainList()}
-            disabled={!siteId || listLoading}
-            className="rounded border border-slate-200 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-          >
-            {listLoading ? "Loading strains…" : "Load existing strains"}
-          </button>
-          {strainList.length > 0 && (
-            <span className="text-xs text-slate-500">{strainList.length} strain pages found</span>
-          )}
+        <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3">
+          <p className="mb-2 text-xs font-medium text-slate-600">Workflow</p>
+          <div className="flex flex-wrap gap-4">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-800">
+              <input
+                type="radio"
+                name="strain-workflow"
+                checked={isNewStrain}
+                onChange={() => switchToNewMode()}
+                className="text-emerald-600"
+              />
+              Create new strain page
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-800">
+              <input
+                type="radio"
+                name="strain-workflow"
+                checked={isUpdateMode}
+                onChange={() => switchToUpdateMode()}
+                className="text-emerald-600"
+              />
+              Update existing strain page
+            </label>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            {isNewStrain
+              ? "For strains not on weed.com yet — creates a new /strains/[slug]/ draft."
+              : "Enter the strain name, live page URL, and WordPress post ID — then regenerate and push to that post (status unchanged)."}
+          </p>
         </div>
 
-        {strainList.length > 0 && (
-          <div className="max-h-40 overflow-auto rounded border border-slate-100 text-xs">
-            {strainList.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => selectExistingStrain(s)}
-                className="block w-full border-b border-slate-50 px-3 py-2 text-left hover:bg-emerald-50"
-              >
-                <span className="font-medium text-slate-800">{s.title}</span>
-                <span className="ml-2 text-slate-400">
-                  #{s.id} · {s.status} · {s.restCollection}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">Strain name</label>
-          <input
-            value={strainName}
-            onChange={(e) => setStrainName(e.target.value)}
-            placeholder="Blue Dream"
-            className="w-full rounded border border-slate-200 px-3 py-2 text-sm"
-          />
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
+        {isNewStrain ? (
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-500">Existing page URL (optional)</label>
+            <label className="mb-1 block text-xs font-medium text-slate-500">New strain name</label>
             <input
-              value={strainUrl}
-              onChange={(e) => setStrainUrl(e.target.value)}
-              placeholder="https://weed.com/strains/blue-dream/"
-              className="w-full rounded border border-slate-200 px-3 py-2 text-sm font-mono"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-500">WordPress post ID (for updates)</label>
-            <input
-              value={postId}
-              onChange={(e) => setPostId(e.target.value ? parseInt(e.target.value, 10) : "")}
-              placeholder="Auto from list"
+              value={strainName}
+              onChange={(e) => {
+                setStrainName(e.target.value);
+                resetGeneratedOutput();
+              }}
+              placeholder="e.g. Permanent Marker"
               className="w-full rounded border border-slate-200 px-3 py-2 text-sm"
             />
           </div>
-        </div>
+        ) : (
+          <div className="space-y-3 rounded-lg border border-sky-200 bg-sky-50/40 p-3">
+            <p className="text-xs font-medium text-sky-900">Existing strain to update</p>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-500">Strain name</label>
+              <input
+                value={strainName}
+                onChange={(e) => {
+                  setStrainName(e.target.value);
+                  resetGeneratedOutput();
+                }}
+                placeholder="e.g. Blue Dream"
+                className="w-full rounded border border-sky-200 bg-white px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-500">Page URL</label>
+              <input
+                value={strainUrl}
+                onChange={(e) => {
+                  setStrainUrl(e.target.value);
+                  resetGeneratedOutput();
+                }}
+                placeholder="https://weed.com/strains/blue-dream/"
+                className="w-full rounded border border-sky-200 bg-white px-3 py-2 text-sm font-mono"
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-500">WordPress post ID</label>
+                <input
+                  value={postId}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    setPostId(raw && /^\d+$/.test(raw) ? parseInt(raw, 10) : "");
+                    resetGeneratedOutput();
+                  }}
+                  placeholder="e.g. 12345"
+                  className="w-full rounded border border-sky-200 bg-white px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-500">REST collection</label>
+                <select
+                  value={restCollection}
+                  onChange={(e) => {
+                    setRestCollection(e.target.value);
+                    resetGeneratedOutput();
+                  }}
+                  className="w-full rounded border border-sky-200 bg-white px-3 py-2 text-sm"
+                >
+                  {REST_COLLECTION_OPTIONS.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div>
           <label className="mb-1 block text-xs font-medium text-slate-500">Lineage / breeder notes (optional)</label>
@@ -552,10 +633,16 @@ export default function WeedComStrainPageTool() {
         <button
           type="button"
           onClick={() => void generate()}
-          disabled={busy || !siteId || !strainName.trim()}
+          disabled={busy || !siteId || !strainName.trim() || (isUpdateMode && !updateReady)}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
         >
-          {contentLoading ? "Generating content…" : imagesLoading ? "Generating images…" : "Generate strain page + images"}
+          {contentLoading
+            ? "Generating content…"
+            : imagesLoading
+              ? "Generating images…"
+              : isNewStrain
+                ? "Generate new strain page + images"
+                : "Regenerate strain page + images"}
         </button>
 
         {error && (
@@ -565,6 +652,20 @@ export default function WeedComStrainPageTool() {
 
       {result && (
         <div className="max-w-4xl space-y-4 rounded-lg border border-slate-200 bg-white p-4">
+          {isUpdateMode && postId ? (
+            <div className="rounded border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+              Updating existing strain page <span className="font-mono">#{postId}</span>
+              {strainUrl ? (
+                <>
+                  {" "}
+                  ·{" "}
+                  <a href={strainUrl} target="_blank" rel="noopener noreferrer" className="underline">
+                    View live page
+                  </a>
+                </>
+              ) : null}
+            </div>
+          ) : null}
           <div>
             <h2 className="text-sm font-medium text-slate-700">Generated draft</h2>
             <p className="mt-1 text-sm font-medium text-slate-900">{result.title}</p>
@@ -672,7 +773,7 @@ export default function WeedComStrainPageTool() {
             disabled={busy || !images?.length}
             className="rounded-lg border border-emerald-600 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-60"
           >
-            {publishStep ?? (postId ? "Update strain on WordPress (keeps live/draft status)" : "Publish new strain draft")}
+            {publishStep ?? (isNewStrain ? "Publish new strain draft" : "Update strain on WordPress (keeps live/draft status)")}
           </button>
 
           {publishResult && (
@@ -688,6 +789,22 @@ export default function WeedComStrainPageTool() {
               <a href={publishResult.editUrl} target="_blank" rel="noopener noreferrer" className="underline">
                 Edit in wp-admin
               </a>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={startNewStrain}
+                  className="rounded-lg border border-emerald-400 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+                >
+                  Start new strain
+                </button>
+                <button
+                  type="button"
+                  onClick={startUpdateAnother}
+                  className="rounded-lg border border-sky-400 bg-white px-3 py-1.5 text-xs font-medium text-sky-800 hover:bg-sky-100"
+                >
+                  Update another strain
+                </button>
+              </div>
             </div>
           )}
         </div>

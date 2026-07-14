@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { callClaude, isClaudeServiceUnavailableError } from "@/lib/anthropic";
 import { stripLeadingPostTitleH1 } from "@/lib/postHtml";
+import { runArticleAiDetectPass } from "@/lib/contentProduction/articleAiDetectPass";
 import { ensureStrainPageComplete } from "@/lib/contentProduction/strainPageCompleteness";
 import {
   countAllowlistedStrainPageLinks,
@@ -84,6 +85,15 @@ export async function postStrainPageGenerate(request: Request) {
     html = ensureStrainPageSeedsSection(html, name, siteOrigin);
     html = ensureStrainPageClonesSection(html, name, siteOrigin);
 
+    const aiPass = await runArticleAiDetectPass(html, {
+      toneHint: site.tone_prompt ?? undefined,
+    });
+    html = aiPass.article;
+    // Re-assert structural sections after voice-pass rewrites
+    html = ensureStrainPageSeedsSection(html, name, siteOrigin);
+    html = ensureStrainPageClonesSection(html, name, siteOrigin);
+    html = sanitizeStrainPageLinks(html, verifiedWithFields.allowlist, siteOrigin);
+
     const internalLinkCount = countAllowlistedStrainPageLinks(
       html,
       verifiedWithFields.allowlist,
@@ -97,6 +107,7 @@ export async function postStrainPageGenerate(request: Request) {
       slug: strainPageSlug(name),
       suggestedPath: strainPageSuggestedPath(name),
       customFields,
+      codeGuards: aiPass.codeGuards,
       seo: {
         focusKeyword: strainPageFocusKeyword(name),
         metaTitle: strainPageMetaTitle(name),
