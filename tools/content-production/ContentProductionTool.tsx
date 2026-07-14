@@ -40,6 +40,9 @@ export function ContentProductionTool({
   articleSheetFromGoogle = false,
   manualBriefFields = false,
   showExpertInsightCountSelector = false,
+  cmsName = "WordPress",
+  siteFields = "wordpress",
+  showLinkSync = true,
 }: {
   config: ToolConfig;
   /** Separate API namespace per product (e.g. Weed.com uses `/api/weed-com-content-production`). */
@@ -52,8 +55,15 @@ export function ContentProductionTool({
   manualBriefFields?: boolean;
   /** Weed.com: choose exactly how many Expert Insight boxes to generate. */
   showExpertInsightCountSelector?: boolean;
+  /** CMS label used in publish / site-manager copy (e.g. WordPress or Shopify). */
+  cmsName?: string;
+  /** Site credential form layout. Shopify maps username→Blog ID, app_password→Admin API token. */
+  siteFields?: "wordpress" | "shopify";
+  /** When false, hide WordPress internal/product link sync controls. */
+  showLinkSync?: boolean;
 }) {
   const api = apiPrefix.replace(/\/$/, "");
+  const isShopify = siteFields === "shopify";
   const [selectedSite, setSelectedSite] = useState<{ id: string; name: string; url: string } | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
   const [sitesLoading, setSitesLoading] = useState(false);
@@ -111,7 +121,7 @@ export function ContentProductionTool({
   const [publishStep, setPublishStep] = useState<string | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [publishResult, setPublishResult] = useState<{
-    postId: number;
+    postId: number | string;
     postUrl: string;
     editUrl: string;
     site: { name: string; url: string };
@@ -415,7 +425,7 @@ export function ContentProductionTool({
   }, []);
 
   const runDraftToWordPress = useCallback(
-    async (contentHtml: string, images: ImageItem[], existingPostId?: number) => {
+    async (contentHtml: string, images: ImageItem[], existingPostId?: number | string) => {
       if (!selectedSite || !title.trim() || !contentHtml) return;
 
       const isUpdate = existingPostId != null;
@@ -431,8 +441,9 @@ export function ContentProductionTool({
         setPublishResult(null);
       }
 
-      const wafHint =
-        " If this works locally but not on Vercel, the site’s firewall (e.g. Cloudflare) may be blocking /wp-json from Vercel. Your team can allowlist the app — see WORDPRESS_WAF_* env vars in .env.example.";
+      const wafHint = isShopify
+        ? " Confirm the Admin API token has write_content / write_files scopes and the Blog ID is correct."
+        : " If this works locally but not on Vercel, the site’s firewall (e.g. Cloudflare) may be blocking /wp-json from Vercel. Your team can allowlist the app — see WORDPRESS_WAF_* env vars in .env.example.";
 
       const parseApiError = (res: Response, text: string): string => {
         let data: Record<string, unknown> = {};
@@ -475,7 +486,7 @@ export function ContentProductionTool({
         for (let i = 0; i < included.length; i++) {
           if (publishCancelledRef.current) return;
           const img = included[i];
-          setPublishStep(`Uploading image ${i + 1} of ${included.length} to WordPress…`);
+          setPublishStep(`Uploading image ${i + 1} of ${included.length} to ${cmsName}…`);
           const upRes = await fetch(`${api}/publish/upload-image`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -508,7 +519,7 @@ export function ContentProductionTool({
           const id = upData.id as number;
           const url = upData.url as string;
           if (typeof id !== "number" || typeof url !== "string") {
-            setPublishError("WordPress did not return media id/url for an image");
+            setPublishError(`${cmsName} did not return media id/url for an image`);
             if (!isUpdate) setPublishResult(null);
             return;
           }
@@ -567,7 +578,7 @@ export function ContentProductionTool({
 
         setPublishError(null);
         setPublishResult({
-          postId: data.postId as number,
+          postId: data.postId as number | string,
           postUrl: data.postUrl as string,
           editUrl: data.editUrl as string,
           site: (data.site as { name: string; url: string }) ?? { name: selectedSite.name, url: selectedSite.url },
@@ -589,7 +600,7 @@ export function ContentProductionTool({
         publishAbortRef.current = null;
       }
     },
-    [selectedSite, title, referenceUrl, keywords, api, showReferenceUrl]
+    [selectedSite, title, referenceUrl, keywords, api, showReferenceUrl, cmsName, isShopify]
   );
 
   const handlePublish = useCallback(() => {
@@ -996,14 +1007,22 @@ export function ContentProductionTool({
           </svg>
           <span className="text-sm font-semibold">Site manager</span>
           <span className="hidden text-xs font-normal text-slate-400 sm:inline">
-            {panelOpen ? "Hide" : "Add sites · Sync post & product links"}
+            {panelOpen ? "Hide" : isShopify ? "Add Shopify stores" : "Add sites · Sync post & product links"}
           </span>
         </button>
         {!panelOpen ? (
           <p className="max-w-md text-right text-[11px] text-slate-400">
-            Open Site manager to add WordPress sites and use{" "}
-            <strong className="font-medium text-slate-500">Sync post links</strong> and{" "}
-            <strong className="font-medium text-slate-500">Sync product links</strong> per site.
+            {isShopify ? (
+              <>
+                Open Site manager to add your {cmsName} store (shop host, Blog ID, Admin API token).
+              </>
+            ) : (
+              <>
+                Open Site manager to add WordPress sites and use{" "}
+                <strong className="font-medium text-slate-500">Sync post links</strong> and{" "}
+                <strong className="font-medium text-slate-500">Sync product links</strong> per site.
+              </>
+            )}
           </p>
         ) : null}
       </div>
@@ -1011,15 +1030,23 @@ export function ContentProductionTool({
       {panelOpen && (
         <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-6">
           <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-500">Site Manager</h2>
-          <p className="mb-4 text-xs leading-relaxed text-slate-500">
-            <strong className="font-medium text-slate-600">Internal links:</strong> Each WordPress site has its own rows
-            in Supabase (keyed by site id; nothing mixes between sites). <strong>Sync post links</strong> pulls blog
-            URLs from WordPress; <strong>Sync product links</strong> pulls WooCommerce catalog URLs (
-            <code className="rounded bg-slate-200/80 px-1">wc/v3/products</code>, stored as{" "}
-            <code className="rounded bg-slate-200/80 px-1">kind=product</code>). Run migrations{" "}
-            <code className="rounded bg-slate-200/80 px-1">005</code> and{" "}
-            <code className="rounded bg-slate-200/80 px-1">006_site_internal_links_kind_scope.sql</code>.
-          </p>
+          {showLinkSync ? (
+            <p className="mb-4 text-xs leading-relaxed text-slate-500">
+              <strong className="font-medium text-slate-600">Internal links:</strong> Each WordPress site has its own rows
+              in Supabase (keyed by site id; nothing mixes between sites). <strong>Sync post links</strong> pulls blog
+              URLs from WordPress; <strong>Sync product links</strong> pulls WooCommerce catalog URLs (
+              <code className="rounded bg-slate-200/80 px-1">wc/v3/products</code>, stored as{" "}
+              <code className="rounded bg-slate-200/80 px-1">kind=product</code>). Run migrations{" "}
+              <code className="rounded bg-slate-200/80 px-1">005</code> and{" "}
+              <code className="rounded bg-slate-200/80 px-1">006_site_internal_links_kind_scope.sql</code>.
+            </p>
+          ) : (
+            <p className="mb-4 text-xs leading-relaxed text-slate-500">
+              Add your Farm.com Shopify store with the <strong className="font-medium text-slate-600">*.myshopify.com</strong>{" "}
+              host, numeric <strong className="font-medium text-slate-600">Blog ID</strong>, and an Admin API access token
+              with content/file write scopes. Drafts publish to that blog only.
+            </p>
+          )}
           {linkSyncNotice ? (
             <p className="mb-3 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-900">{linkSyncNotice}</p>
           ) : null}
@@ -1083,26 +1110,30 @@ export function ContentProductionTool({
                         >
                           Edit
                         </button>
-                        <button
-                          type="button"
-                          disabled={linkSyncBusy?.siteId === site.id}
-                          onClick={() => void handleSyncInternalLinks(site.id)}
-                          className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
-                        >
-                          {linkSyncBusy?.siteId === site.id && linkSyncBusy.kind === "posts"
-                            ? "Syncing posts…"
-                            : "Sync post links"}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={linkSyncBusy?.siteId === site.id}
-                          onClick={() => void handleSyncProductLinks(site.id)}
-                          className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-xs font-medium text-violet-900 hover:bg-violet-100 disabled:opacity-50"
-                        >
-                          {linkSyncBusy?.siteId === site.id && linkSyncBusy.kind === "products"
-                            ? "Syncing products…"
-                            : "Sync product links"}
-                        </button>
+                        {showLinkSync ? (
+                          <>
+                            <button
+                              type="button"
+                              disabled={linkSyncBusy?.siteId === site.id}
+                              onClick={() => void handleSyncInternalLinks(site.id)}
+                              className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+                            >
+                              {linkSyncBusy?.siteId === site.id && linkSyncBusy.kind === "posts"
+                                ? "Syncing posts…"
+                                : "Sync post links"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={linkSyncBusy?.siteId === site.id}
+                              onClick={() => void handleSyncProductLinks(site.id)}
+                              className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-xs font-medium text-violet-900 hover:bg-violet-100 disabled:opacity-50"
+                            >
+                              {linkSyncBusy?.siteId === site.id && linkSyncBusy.kind === "products"
+                                ? "Syncing products…"
+                                : "Sync product links"}
+                            </button>
+                          </>
+                        ) : null}
                         {deleteConfirmId === site.id ? (
                           <>
                             <button
@@ -1147,47 +1178,63 @@ export function ContentProductionTool({
                   type="text"
                   value={addForm.name}
                   onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
-                  placeholder="e.g. Green.org"
+                  placeholder={isShopify ? "e.g. Farm.com" : "e.g. Green.org"}
                   className="w-full rounded border border-slate-200 px-3 py-2 text-sm"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-500">WordPress URL</label>
+                <label className="mb-1 block text-xs text-slate-500">
+                  {isShopify ? "Shopify shop host" : "WordPress URL"}
+                </label>
                 <input
-                  type="url"
+                  type="text"
                   value={addForm.url}
                   onChange={(e) => setAddForm((f) => ({ ...f, url: e.target.value }))}
-                  placeholder="https://example.com"
+                  placeholder={isShopify ? "your-store.myshopify.com" : "https://example.com"}
                   className="w-full rounded border border-slate-200 px-3 py-2 text-sm"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-500">Username (login)</label>
+                <label className="mb-1 block text-xs text-slate-500">
+                  {isShopify ? "Blog ID" : "Username (login)"}
+                </label>
                 <input
                   type="text"
                   value={addForm.username}
                   onChange={(e) => setAddForm((f) => ({ ...f, username: e.target.value }))}
-                  placeholder="Exact value from Users → Profile → Username"
+                  placeholder={
+                    isShopify
+                      ? "Numeric ID from Online Store → Blog"
+                      : "Exact value from Users → Profile → Username"
+                  }
                   className="w-full rounded border border-slate-200 px-3 py-2 text-sm"
                   autoComplete="username"
                 />
                 <p className="mt-1 text-xs text-slate-500">
-                  Use the Username field on your profile (or the Username column under Users → All Users)—not the
-                  public display name at the top. WordPress logins cannot contain spaces; “alex weed” is a name, not
-                  the login.
+                  {isShopify
+                    ? "Open the blog in Shopify Admin; the URL usually ends with /blogs/NEWS_BLOG_ID or check the blog settings page."
+                    : "Use the Username field on your profile (or the Username column under Users → All Users)—not the public display name at the top. WordPress logins cannot contain spaces; “alex weed” is a name, not the login."}
                 </p>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-500">Application password</label>
+                <label className="mb-1 block text-xs text-slate-500">
+                  {isShopify ? "Admin API access token" : "Application password"}
+                </label>
                 <input
                   type="password"
                   value={addForm.app_password}
                   onChange={(e) => setAddForm((f) => ({ ...f, app_password: e.target.value }))}
-                  placeholder="From Users → Profile → Application Passwords"
+                  placeholder={
+                    isShopify
+                      ? "shpat_… from a custom app (write_content + write_files)"
+                      : "From Users → Profile → Application Passwords"
+                  }
                   className="w-full rounded border border-slate-200 px-3 py-2 text-sm"
                 />
                 <p className="mt-1 text-xs text-slate-500">
-                  Not your normal WordPress password. Paste the generated app password with or without spaces.
+                  {isShopify
+                    ? "Create a custom app in Shopify Admin → Settings → Apps → Develop apps. Grant write_content (or write_online_store_pages) and write_files."
+                    : "Not your normal WordPress password. Paste the generated app password with or without spaces."}
                 </p>
               </div>
               <div>
@@ -1973,7 +2020,7 @@ export function ContentProductionTool({
               <div className="rounded-lg border border-green-200 bg-green-50 p-4">
               <p className="font-medium text-green-800">
                 {publishing
-                  ? "Sending to WordPress…"
+                  ? `Sending to ${cmsName}…`
                   : publishResult.updated
                     ? "Draft updated successfully"
                     : "Draft published successfully"}
@@ -2001,7 +2048,7 @@ export function ContentProductionTool({
                 );
               })()}
               <p className="mt-2 text-xs text-green-800/90">
-                After you edit the article or images above, you can push changes to the same WordPress draft without creating a duplicate post.
+                After you edit the article or images above, you can push changes to the same {cmsName} draft without creating a duplicate post.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <a
@@ -2010,7 +2057,7 @@ export function ContentProductionTool({
                   rel="noopener noreferrer"
                   className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700"
                 >
-                  View draft in WordPress
+                  View draft in {cmsName}
                 </a>
                 <button
                   type="button"
@@ -2018,7 +2065,7 @@ export function ContentProductionTool({
                   disabled={publishing || !generatedImages}
                   className="rounded-lg border border-green-600 bg-white px-4 py-2 text-sm font-medium text-green-800 hover:bg-green-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {publishing ? "Updating draft…" : "Update draft in WordPress"}
+                  {publishing ? "Updating draft…" : `Update draft in ${cmsName}`}
                 </button>
                 <button
                   type="button"
@@ -2074,12 +2121,15 @@ export function ContentProductionTool({
                   <p className="font-semibold text-rose-800">Could not publish draft</p>
                   <p className="mt-2 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{publishError}</p>
                   <p className="mt-3 text-xs text-rose-700/90">
-                    Check <strong>Server logs</strong> in the sidebar (if configured), Vercel → Deployment → Functions logs, and WordPress application password / site URL in Site settings.
+                    Check <strong>Server logs</strong> in the sidebar (if configured), Vercel → Deployment → Functions logs, and{" "}
+                    {isShopify
+                      ? "Shopify Admin API token / shop host / Blog ID in Site settings."
+                      : "WordPress application password / site URL in Site settings."}
                   </p>
                 </div>
               ) : null}
               <p className="text-xs text-slate-500">
-                Nothing is sent to WordPress until you click <span className="font-medium">Publish as Draft</span>. Edit
+                Nothing is sent to {cmsName} until you click <span className="font-medium">Publish as Draft</span>. Edit
                 content or images above first if needed.
               </p>
               <button
@@ -2088,14 +2138,14 @@ export function ContentProductionTool({
                 disabled={publishing}
                 className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-60"
               >
-                {publishing ? "Sending to WordPress…" : `Publish as Draft to ${selectedSite?.name ?? ""}`}
+                {publishing ? `Sending to ${cmsName}…` : `Publish as Draft to ${selectedSite?.name ?? ""}`}
               </button>
             </div>
           ) : (
             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-slate-500">
               {publishing
-                ? "Sending draft to WordPress…"
-                : "Approve content and images above, then click Publish as Draft to send to WordPress."}
+                ? `Sending draft to ${cmsName}…`
+                : `Approve content and images above, then click Publish as Draft to send to ${cmsName}.`}
             </div>
           )}
         </div>

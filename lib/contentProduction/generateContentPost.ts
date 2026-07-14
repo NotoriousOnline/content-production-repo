@@ -17,6 +17,7 @@ import {
   type TabibiPmidEntry,
 } from "@/lib/tabibiPmidDatabase";
 import { appendTabibiSourcesFooter, pickTabibiSourcesForFooter } from "@/lib/tabibiSourcesFooter";
+import { runArticleAiDetectPass } from "@/lib/contentProduction/articleAiDetectPass";
 import {
   ensureWeedLearnComplete,
   maxTokensForWeedArticleHtml,
@@ -782,6 +783,21 @@ Output the complete revised HTML only. No markdown code fences.`;
       content = stripInBodyImportantNotice(content);
       content = appendWeedImportantNoticeIfRequested(content, includeImportantNotice);
     }
+
+    // Winston AI detectLoop (banned phrases / long paragraphs / AI-risk). Shared across content tools.
+    const aiPass = await runArticleAiDetectPass(content, {
+      toneHint: site.tone_prompt ?? undefined,
+    });
+    content = aiPass.article;
+    if (toolScope === WP_TOOL_SCOPE.weedComContentProduction) {
+      content = lockExpertBoxTypography(content);
+      if (tabibiForArticle.length > 0) {
+        content = appendTabibiSourcesFooter(content, tabibiForArticle);
+      }
+      content = stripInBodyImportantNotice(content);
+      content = appendWeedImportantNoticeIfRequested(content, includeImportantNotice);
+    }
+
     const tabibiSourcesPicked: TabibiPmidEntry[] =
       toolScope === WP_TOOL_SCOPE.weedComContentProduction && tabibiForArticle.length > 0
         ? pickTabibiSourcesForFooter(content, tabibiForArticle)
@@ -801,6 +817,7 @@ Output the complete revised HTML only. No markdown code fences.`;
       internalLinksUsed: used,
       wordCount: wordCountActual,
       refinement: isRefinement,
+      codeGuards: aiPass.codeGuards,
       ...(toolScope === WP_TOOL_SCOPE.weedComContentProduction && tabibiForArticle.length > 0
         ? {
             tabibiExpertInsightPmidsSuggested: tabibiForArticle.map((e) => e.pmid),

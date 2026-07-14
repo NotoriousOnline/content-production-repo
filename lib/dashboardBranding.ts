@@ -15,6 +15,7 @@ export const toolDashboardLabel: Record<string, string> = {
   "article-title-discovery": "Ideas & angles",
   "content-production": "Publish anywhere",
   "weed-com-content-production": "Weed.com editorial",
+  "farm-com-content-production": "Farm.com Shopify",
   "weed-com-strain-comparison": "Strain vs strain",
   "weed-com-strain-page": "Individual strains",
   "weed-com-rank-math": "Rank Math SEO",
@@ -169,6 +170,22 @@ const themes: Record<string, ToolTheme> = {
       rowIdle: "text-slate-400 hover:bg-white/[0.05] hover:text-emerald-200",
       iconActive: "bg-emerald-500/45 text-emerald-50 ring-1 ring-emerald-300/30",
       iconIdle: "bg-white/[0.06] text-slate-500 group-hover:text-emerald-200",
+    },
+  },
+  "farm-com-content-production": {
+    headerAccent: "border-l-4 border-amber-600",
+    cardBlob: "from-amber-200 to-orange-100",
+    cardBorderHover: "hover:border-amber-200",
+    cardTitleHover: "group-hover:text-amber-800",
+    cardCta: "text-amber-700",
+    descriptionClass: "text-amber-950/70",
+    sidebarNav: {
+      bar: "bg-amber-500",
+      rowActive:
+        "bg-amber-500/[0.22] text-amber-50 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)] ring-1 ring-amber-400/25",
+      rowIdle: "text-slate-400 hover:bg-white/[0.05] hover:text-amber-200",
+      iconActive: "bg-amber-500/45 text-amber-50 ring-1 ring-amber-300/30",
+      iconIdle: "bg-white/[0.06] text-slate-500 group-hover:text-amber-200",
     },
   },
 };

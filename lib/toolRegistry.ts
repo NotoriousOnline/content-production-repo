@@ -5,6 +5,8 @@ import { config as contentProductionConfig } from "@/tools/content-production/co
 import ContentProductionTool from "@/tools/content-production/index";
 import { config as socialAutomationConfig } from "@/tools/social-automation/config";
 import SocialAutomationTool from "@/tools/social-automation/index";
+import { config as farmComContentProductionConfig } from "@/tools/farm-com-content-production/config";
+import FarmComContentProductionTool from "@/tools/farm-com-content-production/index";
 import { config as weedComContentProductionConfig } from "@/tools/weed-com-content-production/config";
 import WeedComContentProductionTool from "@/tools/weed-com-content-production/index";
 import { config as weedComRankMathConfig } from "@/tools/weed-com-rank-math/config";
@@ -41,6 +43,12 @@ export const tools: ToolConfig[] = [
     icon: weedComContentProductionConfig.icon,
   },
   {
+    slug: farmComContentProductionConfig.slug,
+    name: farmComContentProductionConfig.name,
+    description: farmComContentProductionConfig.description,
+    icon: farmComContentProductionConfig.icon,
+  },
+  {
     slug: weedComRankMathConfig.slug,
     name: weedComRankMathConfig.name,
     description: weedComRankMathConfig.description,
@@ -70,6 +78,7 @@ const componentMap: Record<string, ComponentType> = {
   "article-title-discovery": ArticleTitleDiscoveryTool,
   "content-production": ContentProductionTool,
   "weed-com-content-production": WeedComContentProductionTool,
+  "farm-com-content-production": FarmComContentProductionTool,
   "weed-com-rank-math": WeedComRankMathTool,
   "weed-com-strain-comparison": WeedComStrainComparisonTool,
   "weed-com-strain-page": WeedComStrainPageTool,

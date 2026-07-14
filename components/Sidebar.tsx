@@ -54,6 +54,7 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   "article-title-discovery": IconNewspaper,
   "content-production": IconCompose,
   "weed-com-content-production": IconLeaf,
+  "farm-com-content-production": IconCompose,
   "weed-com-rank-math": IconCompose,
   "weed-com-strain-comparison": IconLeaf,
 };

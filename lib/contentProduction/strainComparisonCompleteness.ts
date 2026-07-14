@@ -7,6 +7,7 @@ import {
   STRAIN_COMPARISON_WORD_MIN,
   formatStrainLabel,
   strainComparisonSystemPrompt,
+  type StrainComparisonOutline,
 } from "@/lib/contentProduction/strainComparison";
 import { countCompleteWeedFaqPairs, extractWeedFaqSection } from "@/lib/contentProduction/weedLearnCompleteness";
 import { countAllowlistedLinks } from "@/lib/contentProduction/strainComparisonLinks";
@@ -32,41 +33,47 @@ function countWordsFromHtml(html: string): number {
   return plain.split(/\s+/).filter(Boolean).length;
 }
 
-function hasRequiredH2(html: string, strainA: string, strainB: string): string[] {
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function countH2(html: string): number {
+  return (html.match(/<h2\b/gi) ?? []).length;
+}
+
+/** Soft checks — do not force stock "What Is / Effects Comparison" template headings. */
+function hasCoreStructuralGaps(html: string, strainA: string, strainB: string): string[] {
   const missing: string[] = [];
   const labelA = formatStrainLabel(strainA);
   const labelB = formatStrainLabel(strainB);
-  const checks = [
-    new RegExp(`<h2[^>]*>\\s*What Is ${escapeRegex(labelA)}\\s*\\?\\s*</h2>`, "i"),
-    new RegExp(`<h2[^>]*>\\s*What Is ${escapeRegex(labelB)}\\s*\\?\\s*</h2>`, "i"),
-    new RegExp(`<h2[^>]*>[^<]*${escapeRegex(labelA)}[^<]*vs[^<]*${escapeRegex(labelB)}[^<]*Key Differences`, "i"),
-    /<h2[^>]*>\s*Effects Comparison\s*<\/h2>/i,
-    /<h2[^>]*>\s*Which Strain Is Better for/i,
-    new RegExp(`<h2[^>]*>\\s*Where to Buy ${escapeRegex(labelA)} and ${escapeRegex(labelB)}`, "i"),
-    new RegExp(
-      `<h2[^>]*>[\\s\\S]*?Buy[^<]*${escapeRegex(labelA)}[^<]*and[^<]*${escapeRegex(labelB)}[^<]*Seeds`,
-      "i"
-    ),
-    /<h2[^>]*>\s*Frequently asked questions\s*<\/h2>/i,
-  ];
-  const labels = [
-    `What Is ${labelA}?`,
-    `What Is ${labelB}?`,
-    "Key Differences",
-    "Effects Comparison",
-    "Which Strain Is Better",
-    "Where to Buy",
-    "Buy Seeds",
-    "FAQ",
-  ];
-  checks.forEach((re, i) => {
-    if (!re.test(html)) missing.push(labels[i]);
-  });
+  const plain = html.replace(/<[^>]+>/g, " ");
+
+  if (countH2(html) < 3) missing.push("too few H2 sections");
+  if (!new RegExp(escapeRegex(labelA), "i").test(plain)) missing.push(`missing ${labelA} in body`);
+  if (!new RegExp(escapeRegex(labelB), "i").test(plain)) missing.push(`missing ${labelB} in body`);
+  if (!/<h2[^>]*>\s*Frequently asked questions\s*<\/h2>/i.test(html)) missing.push("FAQ");
+  if (!/where to buy|shop|buy .{0,80}strain/i.test(plain)) missing.push("buy/CTA section");
   return missing;
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function missingOutlineHeadings(html: string, outline?: StrainComparisonOutline | null): string[] {
+  if (!outline?.structure?.length) return [];
+  const missing: string[] = [];
+  for (const section of outline.structure.slice(0, 6)) {
+    const heading = section.heading.trim();
+    if (heading.length < 4) continue;
+    // Allow minor punctuation/spacing drift; require core heading words.
+    const core = heading
+      .replace(/[—–-]/g, " ")
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2)
+      .slice(0, 5);
+    if (core.length === 0) continue;
+    const re = new RegExp(core.map(escapeRegex).join("[\\s\\S]{0,40}"), "i");
+    if (!re.test(html)) missing.push(heading);
+  }
+  return missing;
 }
 
 export function auditStrainComparisonHtml(
@@ -74,7 +81,8 @@ export function auditStrainComparisonHtml(
   strainA: string,
   strainB: string,
   allowlist: string[] = [],
-  siteOrigin = ""
+  siteOrigin = "",
+  outline?: StrainComparisonOutline | null
 ): StrainComparisonAudit {
   const reasons: string[] = [];
   const wordCount = countWordsFromHtml(html);
@@ -85,9 +93,14 @@ export function auditStrainComparisonHtml(
     reasons.push(`word count ${wordCount} above maximum ~${STRAIN_COMPARISON_WORD_MAX}`);
   }
 
-  const missingH2 = hasRequiredH2(html, strainA, strainB);
-  if (missingH2.length > 0) {
-    reasons.push(`missing sections: ${missingH2.join(", ")}`);
+  const structuralGaps = hasCoreStructuralGaps(html, strainA, strainB);
+  if (structuralGaps.length > 0) {
+    reasons.push(`missing core pieces: ${structuralGaps.join(", ")}`);
+  }
+
+  const outlineGaps = missingOutlineHeadings(html, outline);
+  if (outlineGaps.length > 0) {
+    reasons.push(`outline H2 drift (missing/weak): ${outlineGaps.slice(0, 3).join("; ")}`);
   }
 
   const hasComparisonTable = /<table\b/i.test(html);
@@ -125,17 +138,22 @@ export async function ensureStrainComparisonComplete(
   strainA: string,
   strainB: string,
   allowlist: string[] = [],
-  siteOrigin = ""
+  siteOrigin = "",
+  outline?: StrainComparisonOutline | null
 ): Promise<string> {
   let current = html.replace(/\u2014/g, " - ");
   for (let pass = 0; pass < 2; pass++) {
-    const audit = auditStrainComparisonHtml(current, strainA, strainB, allowlist, siteOrigin);
+    const audit = auditStrainComparisonHtml(current, strainA, strainB, allowlist, siteOrigin, outline);
     if (!audit.needsRepair) return current;
+
+    const outlineBlock = outline
+      ? `\n\nOUTLINE JSON (preserve persona + section intents; do not collapse into a stock template):\n${JSON.stringify(outline, null, 2)}`
+      : "";
 
     const repairSystem = `${strainComparisonSystemPrompt()}
 
-REPAIR PASS: Fix ONLY the issues listed. Return the FULL revised HTML article. Do not shorten working sections.`;
-    const repairUser = `Issues to fix:\n${audit.reasons.map((r) => `- ${r}`).join("\n")}\n\nStrain A: ${strainA}\nStrain B: ${strainB}\n\nCURRENT HTML:\n${current}`;
+REPAIR PASS: Fix ONLY the issues listed. Return the FULL revised HTML article. Do not shorten working sections. Do not invent filler "What Is" sections unless the outline requires them. Do not invent numbers, dates, studies, or quotes that are not already in the article.`;
+    const repairUser = `Issues to fix:\n${audit.reasons.map((r) => `- ${r}`).join("\n")}\n\nStrain A: ${strainA}\nStrain B: ${strainB}${outlineBlock}\n\nCURRENT HTML:\n${current}`;
 
     try {
       const repaired = await callClaude(repairSystem, repairUser, { maxTokens: 8192 });

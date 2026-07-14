@@ -2,11 +2,15 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 import { normalizeApplicationPassword, type WPSite } from "@/lib/wordpressClient";
 
 /** Which content tool owns this row (separate site lists per product). */
-export type WPToolScope = "content-production" | "weed-com-content-production";
+export type WPToolScope =
+  | "content-production"
+  | "weed-com-content-production"
+  | "farm-com-content-production";
 
 export const WP_TOOL_SCOPE = {
   contentProduction: "content-production",
   weedComContentProduction: "weed-com-content-production",
+  farmComContentProduction: "farm-com-content-production",
 } as const satisfies Record<string, WPToolScope>;
 
 export type WPSiteRow = WPSite & {
