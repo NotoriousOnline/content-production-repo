@@ -8,6 +8,11 @@ import {
   type ArticleSheetRow,
 } from "@/lib/articleSheetCalendar";
 import { parseGenerateImagesResponse } from "@/lib/contentProduction/generateImagesResponse";
+import {
+  AiDetectionScoreBanner,
+  detectInfoFromCodeGuards,
+  type AiDetectionScoreInfo,
+} from "@/components/AiDetectionScoreBanner";
 
 type ImageItem = {
   type: "featured" | "in-content";
@@ -109,6 +114,7 @@ export function ContentProductionTool({
   const [contentLoading, setContentLoading] = useState(false);
   const [imagesLoading, setImagesLoading] = useState(false);
   const [generatedContent, setGeneratedContent] = useState<string | null>(null);
+  const [aiDetection, setAiDetection] = useState<AiDetectionScoreInfo | null>(null);
   const [generatedImages, setGeneratedImages] = useState<ImageItem[] | null>(null);
   const [internalLinksUsed, setInternalLinksUsed] = useState<InternalLink[]>([]);
   const [contentRefinementInstructions, setContentRefinementInstructions] = useState("");
@@ -632,6 +638,7 @@ export function ContentProductionTool({
     setContentLoading(true);
     setImagesLoading(false);
     setGeneratedContent(null);
+    setAiDetection(null);
     setGeneratedImages(null);
     setInternalLinksUsed([]);
     setContentApproved(false);
@@ -662,7 +669,12 @@ export function ContentProductionTool({
           ...(showExpertInsightCountSelector ? { includeImportantNotice } : {}),
         }),
       });
-      const contentData = (await contentRes.json()) as { content?: string; error?: string; internalLinksUsed?: InternalLink[] };
+      const contentData = (await contentRes.json()) as {
+        content?: string;
+        error?: string;
+        internalLinksUsed?: InternalLink[];
+        codeGuards?: unknown;
+      };
 
       if (!contentRes.ok) {
         setContentLoading(false);
@@ -680,6 +692,7 @@ export function ContentProductionTool({
 
       setContentLoading(false);
       setGeneratedContent(contentData.content);
+      setAiDetection(detectInfoFromCodeGuards(contentData.codeGuards));
       setInternalLinksUsed(contentData.internalLinksUsed ?? []);
       contentPhaseComplete = true;
       setImagesLoading(true);
@@ -791,6 +804,7 @@ export function ContentProductionTool({
         content?: string;
         internalLinksUsed?: InternalLink[];
         error?: string;
+        codeGuards?: unknown;
       };
 
       if (!contentRes.ok) {
@@ -804,6 +818,7 @@ export function ContentProductionTool({
       }
 
       setGeneratedContent(contentData.content);
+      setAiDetection(detectInfoFromCodeGuards(contentData.codeGuards));
       setInternalLinksUsed(contentData.internalLinksUsed ?? []);
       setContentApproved(false);
       setApprovedContent(null);
@@ -978,6 +993,7 @@ export function ContentProductionTool({
     setFaqCount(5);
     setIncludeImportantNotice(false);
     setGeneratedContent(null);
+    setAiDetection(null);
     setGeneratedImages(null);
     setInternalLinksUsed([]);
     setContentApproved(false);
@@ -1686,6 +1702,7 @@ export function ContentProductionTool({
                 />
               )}
               <p className="text-xs text-slate-500">Word count: {contentWordCount}</p>
+              <AiDetectionScoreBanner detect={aiDetection} />
               {internalLinksUsed.length > 0 && (
                 <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-3">
                   <p className="mb-2 text-xs font-medium text-slate-600">Internal links used</p>

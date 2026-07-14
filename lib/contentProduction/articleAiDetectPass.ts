@@ -63,7 +63,10 @@ export async function voicePassFlaggedArticle(
 export type ArticleDetectPassMeta = {
   detectLoop: {
     source: "winston" | "code";
+    /** AI-risk 0–100 (higher = more AI). Alias of aiScore. */
     score: number;
+    /** Explicit AI score 0–100 (same as score). */
+    aiScore: number;
     humanScore: number | null;
     attempts: number;
     passed: boolean;
@@ -112,6 +115,7 @@ export async function runArticleAiDetectPass(
       detectLoop: {
         source: loop.source ?? "code",
         score: loop.score,
+        aiScore: loop.score,
         humanScore: loop.humanScore ?? null,
         attempts: loop.attempts,
         passed: loop.passed,
