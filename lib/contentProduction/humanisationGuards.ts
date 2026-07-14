@@ -382,9 +382,9 @@ export async function detectArticleAiScore(articleText: string): Promise<Article
       if (plainLen >= 300) {
         return await detectWithWinston(articleText);
       }
-      console.warn(`[winston] text too short (${plainLen} chars); falling back to code detector`);
+      console.warn(`[eden-winston] text too short (${plainLen} chars); falling back to code detector`);
     } catch (e) {
-      console.warn("[winston] detection failed; falling back to code detector:", e);
+      console.warn("[eden-winston] detection failed; falling back to code detector:", e);
     }
   }
   const code = detectAiCadence(articleText);

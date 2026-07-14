@@ -1,12 +1,16 @@
 /**
- * Winston AI text detection client.
- * Docs: https://docs.gowinston.ai/api-reference/v2/ai-content-detection/post
+ * AI content detection via Eden AI → Winston AI model.
+ * Playground: https://app.edenai.run/playground/universal-ai?feature=text%2Fai_detection&models=text%2Fai_detection%2Fwinstonai
+ * Docs: https://www.edenai.co/docs/v3/expert-models/features/text/ai-detection
  *
- * score = human likelihood 0–100 (higher = more human).
+ * Internal convention (matches prior Winston direct client):
+ * - humanScore 0–100 (higher = more human)
+ * - aiScore 0–100 (higher = more AI) = 100 - humanScore
  */
 
 export type WinstonSentenceScore = {
   text: string;
+  /** Human likelihood 0–100 (higher = more human). */
   score: number;
 };
 
@@ -21,19 +25,27 @@ export type WinstonAiDetectionResult = {
   creditsRemaining?: number;
   version?: string;
   language?: string;
+  provider?: string;
+  cost?: string;
 };
 
-const WINSTON_ENDPOINT = "https://api.gowinston.ai/v2/ai-content-detection";
+const EDEN_UNIVERSAL_ENDPOINT = "https://api.edenai.run/v3/universal-ai";
+const EDEN_WINSTON_MODEL =
+  process.env.EDEN_AI_DETECTION_MODEL?.trim() || "text/ai_detection/winstonai";
 const MIN_CHARS = 300;
 
-export function getWinstonApiKey(): string {
-  return (process.env.WINSTON_AI_API_KEY ?? process.env.WINSTONAI_API_KEY ?? "").trim();
+export function getEdenAiApiKey(): string {
+  return (process.env.EDEN_AI_API_KEY ?? process.env.EDENAI_API_KEY ?? "").trim();
 }
 
-/** Strip markdown/HTML to plain text for Winston (min 300 chars required by API). */
+/** @deprecated Prefer getEdenAiApiKey — kept for older call sites. */
+export function getWinstonApiKey(): string {
+  return getEdenAiApiKey();
+}
+
+/** Strip markdown/HTML to plain text for detection (min 300 chars required). */
 export function markdownToPlainTextForWinston(md: string): string {
   let text = md;
-  // HTML articles: drop tags after keeping link/alt text hints lightly
   if (/<\/?[a-z][\s\S]*>/i.test(text)) {
     text = text
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -62,27 +74,85 @@ export function markdownToPlainTextForWinston(md: string): string {
 
 export const toPlainTextForWinston = markdownToPlainTextForWinston;
 
+/** Normalize Eden float (0–1 or 0–100) to integer 0–100. */
+function toScore100(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  if (n >= 0 && n <= 1) return Math.round(n * 100);
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+/**
+ * Eden normalizes provider output as `ai_score` = AI-likelihood.
+ * Winston's native `score` is human-likelihood — prefer that when original_response is present.
+ */
+function resolveScores(args: {
+  outputAiScore: unknown;
+  original?: Record<string, unknown> | null;
+}): { humanScore: number; aiScore: number } {
+  const original = args.original ?? null;
+  if (original && original.score != null) {
+    const humanScore = toScore100(original.score);
+    return { humanScore, aiScore: Math.max(0, Math.min(100, 100 - humanScore)) };
+  }
+  const aiScore = toScore100(args.outputAiScore);
+  return { humanScore: Math.max(0, Math.min(100, 100 - aiScore)), aiScore };
+}
+
+function parseSentences(
+  items: unknown,
+  originalSentences: unknown
+): WinstonSentenceScore[] {
+  const fromOriginal = Array.isArray(originalSentences) ? originalSentences : [];
+  if (fromOriginal.length > 0) {
+    return fromOriginal
+      .map((row) => {
+        const r = (row ?? {}) as Record<string, unknown>;
+        // Winston original: score = human likelihood
+        return {
+          text: String(r.text ?? "").trim(),
+          score: toScore100(r.score),
+        };
+      })
+      .filter((s) => s.text.length > 0);
+  }
+
+  const fromItems = Array.isArray(items) ? items : [];
+  return fromItems
+    .map((row) => {
+      const r = (row ?? {}) as Record<string, unknown>;
+      const aiScore = toScore100(r.ai_score);
+      return {
+        text: String(r.text ?? "").trim(),
+        score: Math.max(0, Math.min(100, 100 - aiScore)),
+      };
+    })
+    .filter((s) => s.text.length > 0);
+}
+
+/**
+ * Run Winston AI detection through Eden AI Universal API.
+ */
 export async function detectWinstonAiText(
   textOrMarkdown: string,
-  opts?: { language?: string; version?: string; sentences?: boolean }
+  _opts?: { language?: string; version?: string; sentences?: boolean }
 ): Promise<WinstonAiDetectionResult> {
-  const apiKey = getWinstonApiKey();
+  const apiKey = getEdenAiApiKey();
   if (!apiKey) {
-    throw new Error("WINSTON_AI_API_KEY is not set");
+    throw new Error("EDEN_AI_API_KEY is not set");
   }
 
   let text = markdownToPlainTextForWinston(textOrMarkdown);
   if (text.length < MIN_CHARS) {
     throw new Error(
-      `Winston AI needs at least ${MIN_CHARS} characters of text (got ${text.length}).`
+      `Eden/Winston AI detection needs at least ${MIN_CHARS} characters of text (got ${text.length}).`
     );
   }
-  // API max 150_000 characters
   if (text.length > 150_000) {
     text = text.slice(0, 150_000);
   }
 
-  const res = await fetch(WINSTON_ENDPOINT, {
+  const res = await fetch(EDEN_UNIVERSAL_ENDPOINT, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -90,10 +160,9 @@ export async function detectWinstonAiText(
       Accept: "application/json",
     },
     body: JSON.stringify({
-      text,
-      sentences: opts?.sentences ?? true,
-      language: opts?.language ?? "en",
-      version: opts?.version ?? (process.env.WINSTON_AI_MODEL_VERSION?.trim() || "latest"),
+      model: EDEN_WINSTON_MODEL,
+      input: { text },
+      show_original_response: true,
     }),
   });
 
@@ -102,39 +171,55 @@ export async function detectWinstonAiText(
   try {
     json = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
   } catch {
-    throw new Error(`Winston AI returned non-JSON (HTTP ${res.status}): ${raw.slice(0, 280)}`);
+    throw new Error(`Eden AI returned non-JSON (HTTP ${res.status}): ${raw.slice(0, 280)}`);
   }
 
   if (!res.ok) {
     const desc =
-      typeof json.description === "string"
-        ? json.description
+      typeof json.error === "object" && json.error && "message" in (json.error as object)
+        ? String((json.error as { message?: unknown }).message)
         : typeof json.error === "string"
           ? json.error
-          : raw.slice(0, 280);
-    throw new Error(`Winston AI HTTP ${res.status}: ${desc}`);
+          : typeof json.detail === "string"
+            ? json.detail
+            : raw.slice(0, 280);
+    throw new Error(`Eden AI HTTP ${res.status}: ${desc}`);
   }
 
-  const humanScore = Math.round(Number(json.score ?? 0));
-  const sentencesRaw = Array.isArray(json.sentences) ? json.sentences : [];
-  const sentences: WinstonSentenceScore[] = sentencesRaw
-    .map((row) => {
-      const r = (row ?? {}) as Record<string, unknown>;
-      return {
-        text: String(r.text ?? "").trim(),
-        score: Math.round(Number(r.score ?? 0)),
-      };
-    })
-    .filter((s) => s.text.length > 0);
+  if (json.status === "fail") {
+    const err =
+      typeof json.error === "object" && json.error
+        ? JSON.stringify(json.error).slice(0, 280)
+        : String(json.error ?? "unknown failure");
+    throw new Error(`Eden AI detection failed: ${err}`);
+  }
+
+  const output =
+    json.output && typeof json.output === "object"
+      ? (json.output as Record<string, unknown>)
+      : json;
+  const original =
+    json.original_response && typeof json.original_response === "object"
+      ? (json.original_response as Record<string, unknown>)
+      : null;
+
+  const { humanScore, aiScore } = resolveScores({
+    outputAiScore: output.ai_score,
+    original,
+  });
+
+  const sentences = parseSentences(output.items, original?.sentences);
 
   return {
-    status: typeof json.status === "number" ? json.status : res.status,
-    humanScore: Math.max(0, Math.min(100, humanScore)),
-    aiScore: Math.max(0, Math.min(100, 100 - humanScore)),
+    status: res.status,
+    humanScore,
+    aiScore,
     sentences,
-    creditsUsed: typeof json.credits_used === "number" ? json.credits_used : undefined,
-    creditsRemaining: typeof json.credits_remaining === "number" ? json.credits_remaining : undefined,
-    version: typeof json.version === "string" ? json.version : undefined,
-    language: typeof json.language === "string" ? json.language : undefined,
+    creditsUsed: undefined,
+    creditsRemaining: undefined,
+    version: typeof original?.version === "string" ? original.version : undefined,
+    language: typeof original?.language === "string" ? original.language : undefined,
+    provider: typeof json.provider === "string" ? json.provider : "winstonai",
+    cost: json.cost != null ? String(json.cost) : undefined,
   };
 }

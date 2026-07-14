@@ -503,6 +503,7 @@ export async function postStrainComparisonGenerate(request: Request) {
         detectLoop: {
           source: loop.source ?? "code",
           score: loop.score,
+          aiScore: loop.score,
           humanScore: loop.humanScore ?? null,
           attempts: loop.attempts,
           passed: loop.passed,

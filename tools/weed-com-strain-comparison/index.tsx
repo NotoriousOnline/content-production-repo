@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { parseGenerateImagesResponse } from "@/lib/contentProduction/generateImagesResponse";
+import {
+  AiDetectionScoreBanner,
+  detectInfoFromCodeGuards,
+  type AiDetectionScoreInfo,
+} from "@/components/AiDetectionScoreBanner";
 import { config } from "./config";
 
 type Site = { id: string; name: string; url: string };
@@ -16,6 +21,8 @@ type GenerateResult = {
   strains: { a: string; b: string; strainAUrl: string | null; strainBUrl: string | null };
   verifiedInternalLinks?: { label: string; url: string; kind: string }[];
   linkWarnings?: string[];
+  codeGuards?: unknown;
+  aiDetection?: AiDetectionScoreInfo | null;
 };
 
 type ImageItem = {
@@ -292,7 +299,10 @@ export default function WeedComStrainComparisonTool() {
         setError(data.error ?? `Generate failed (${res.status})`);
         return;
       }
-      setResult(data);
+      setResult({
+        ...data,
+        aiDetection: detectInfoFromCodeGuards(data.codeGuards),
+      });
       contentOk = true;
       setContentLoading(false);
       await generateImages(data);
@@ -556,6 +566,8 @@ export default function WeedComStrainComparisonTool() {
               Path: {result.suggestedPath} · Slug: <code>{result.slug}</code>
             </p>
           </div>
+
+          <AiDetectionScoreBanner detect={result.aiDetection} />
 
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded border border-slate-100 bg-slate-50 p-3 text-xs">

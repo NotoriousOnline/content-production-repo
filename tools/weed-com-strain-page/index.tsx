@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { parseGenerateImagesResponse } from "@/lib/contentProduction/generateImagesResponse";
 import type { StrainPageCustomFields } from "@/lib/contentProduction/strainPage";
+import {
+  AiDetectionScoreBanner,
+  detectInfoFromCodeGuards,
+  type AiDetectionScoreInfo,
+} from "@/components/AiDetectionScoreBanner";
 import { config } from "./config";
 
 type Site = { id: string; name: string; url: string };
@@ -20,6 +25,8 @@ type GenerateResult = {
   strain: { name: string; strainUrl: string | null };
   verifiedInternalLinks?: { label: string; url: string; kind: string }[];
   linkWarnings?: string[];
+  codeGuards?: unknown;
+  aiDetection?: AiDetectionScoreInfo | null;
 };
 
 type ImageItem = {
@@ -348,7 +355,10 @@ export default function WeedComStrainPageTool() {
         setError(data.error ?? `Generate failed (${res.status})`);
         return;
       }
-      setResult(data);
+      setResult({
+        ...data,
+        aiDetection: detectInfoFromCodeGuards(data.codeGuards),
+      });
       contentOk = true;
       setContentLoading(false);
       await generateImages(data);
@@ -673,6 +683,8 @@ export default function WeedComStrainPageTool() {
               Path: {result.suggestedPath} · Slug: <code>{result.slug}</code>
             </p>
           </div>
+
+          <AiDetectionScoreBanner detect={result.aiDetection} />
 
           <CustomFieldsSummary fields={result.customFields} />
 
