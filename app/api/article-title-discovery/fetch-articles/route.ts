@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { fetchDiscoveryArticlesFromRss } from "@/lib/articleDiscoveryRss";
+import { fetchDiscoveryArticlesFromRss, isAllowedGreenOrgDiscoveryUrl } from "@/lib/articleDiscoveryRss";
 import type { ArticleDiscoveryPayload, FetchArticlesResponse } from "@/lib/articleDiscoveryTypes";
 import {
   fetchInoreaderStreamArticles,
   isInoreaderConfigured,
 } from "@/lib/inoreaderClient";
 
-/** Avoid prerendering at build time (RSS / Inoreader calls fail or churn and clutter CI logs). */
+/** Avoid prerendering at build time (RSS calls fail or churn and clutter CI logs). */
 export const dynamic = "force-dynamic";
 
 function readFallbackFlag(): boolean {
@@ -14,65 +14,76 @@ function readFallbackFlag(): boolean {
   return v !== "false" && v !== "0";
 }
 
-export async function GET() {
+/**
+ * Optional Inoreader merge: only keep items whose URL matches the six Green.org sources.
+ */
+async function mergeInoreaderIfConfigured(): Promise<{
+  articles: ArticleDiscoveryPayload[];
+  source: FetchArticlesResponse["source"];
+  inoreaderError?: string;
+}> {
   const wantInoreader = isInoreaderConfigured();
   const streamId = process.env.INOREADER_STREAM_ID?.trim() ?? "";
   const fallbackRss = readFallbackFlag();
 
-  let articles: ArticleDiscoveryPayload[] = [];
-  let source: FetchArticlesResponse["source"] = "rss";
-  let inoreaderError: string | undefined;
+  const rss = await fetchDiscoveryArticlesFromRss();
 
-  if (wantInoreader && streamId) {
-    try {
-      const raw = await fetchInoreaderStreamArticles(streamId, 40);
-      articles = raw.slice(0, 20).map(({ title, url, source: src }) => ({
+  if (!wantInoreader || !streamId) {
+    return { articles: rss, source: "rss" };
+  }
+
+  try {
+    const raw = await fetchInoreaderStreamArticles(streamId, 40);
+    const fromInoreader: ArticleDiscoveryPayload[] = raw
+      .filter((a) => isAllowedGreenOrgDiscoveryUrl(a.url))
+      .slice(0, 20)
+      .map(({ title, url, source: src }) => ({
         title,
         url,
-        source: src,
+        source: src || "Inoreader",
       }));
-      source = "inoreader";
-      const sidLog = streamId.length > 90 ? `${streamId.slice(0, 90)}…` : streamId;
-      console.log(`[fetch-articles] Inoreader stream "${sidLog}" → ${articles.length} articles`);
-      // Always merge recent RSS for freshness/source diversity (ENN/CNN/etc), then dedupe.
-      const rss = await fetchDiscoveryArticlesFromRss();
-      const merged = [...articles, ...rss];
-      const seenUrl = new Set<string>();
-      const seenTitle = new Set<string>();
-      const deduped: ArticleDiscoveryPayload[] = [];
-      for (const a of merged) {
-        const u = a.url.trim().toLowerCase();
-        const t = a.title.trim().toLowerCase();
-        if (!u || seenUrl.has(u) || seenTitle.has(t)) continue;
-        seenUrl.add(u);
-        seenTitle.add(t);
-        deduped.push(a);
-        if (deduped.length >= 20) break;
-      }
-      articles = deduped;
-      source = "inoreader+rss";
-    } catch (err) {
-      inoreaderError = err instanceof Error ? err.message : String(err);
-      console.error("[fetch-articles] Inoreader failed:", inoreaderError);
-      if (fallbackRss) {
-        articles = await fetchDiscoveryArticlesFromRss();
-        source = "inoreader+rss";
-      } else {
-        return NextResponse.json(
-          {
-            articles: [],
-            source: "inoreader",
-            inoreaderError,
-          } satisfies FetchArticlesResponse,
-          { status: 502 }
-        );
-      }
+
+    const merged = [...fromInoreader, ...rss];
+    const seenUrl = new Set<string>();
+    const seenTitle = new Set<string>();
+    const deduped: ArticleDiscoveryPayload[] = [];
+    for (const a of merged) {
+      const u = a.url.trim().toLowerCase();
+      const t = a.title.trim().toLowerCase();
+      if (!u || seenUrl.has(u) || seenTitle.has(t)) continue;
+      seenUrl.add(u);
+      seenTitle.add(t);
+      deduped.push(a);
+      if (deduped.length >= 80) break;
     }
-  } else {
-    articles = await fetchDiscoveryArticlesFromRss();
-    source = "rss";
-    console.log(`[fetch-articles] RSS → ${articles.length} articles`);
+
+    const sidLog = streamId.length > 90 ? `${streamId.slice(0, 90)}…` : streamId;
+    console.log(
+      `[fetch-articles] Inoreader "${sidLog}" kept ${fromInoreader.length} (six-source hosts) + RSS → ${deduped.length}`
+    );
+
+    return { articles: deduped, source: "inoreader+rss" };
+  } catch (err) {
+    const inoreaderError = err instanceof Error ? err.message : String(err);
+    console.error("[fetch-articles] Inoreader failed:", inoreaderError);
+    if (!fallbackRss) {
+      return { articles: [], source: "inoreader", inoreaderError };
+    }
+    return { articles: rss, source: "inoreader+rss", inoreaderError };
   }
+}
+
+export async function GET() {
+  const { articles, source, inoreaderError } = await mergeInoreaderIfConfigured();
+
+  if (source === "inoreader" && articles.length === 0 && inoreaderError) {
+    return NextResponse.json(
+      { articles: [], source, inoreaderError } satisfies FetchArticlesResponse,
+      { status: 502 }
+    );
+  }
+
+  console.log(`[fetch-articles] → ${articles.length} articles (source: ${source})`);
 
   return NextResponse.json({
     articles,

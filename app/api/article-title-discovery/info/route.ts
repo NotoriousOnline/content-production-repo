@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { isInoreaderConfigured } from "@/lib/inoreaderClient";
-import { RSS_FEEDS } from "@/lib/rssFeeds";
+import { GREEN_ORG_DISCOVERY_SOURCES } from "@/lib/rssFeeds";
 
 export const dynamic = "force-dynamic";
 
 export type ArticleDiscoveryInfo = {
-  primarySource: "inoreader" | "rss";
-  rssFeedCount: number;
+  primarySource: "six-sources" | "inoreader+six-sources";
+  sourceCount: number;
+  sourceNames: string[];
   inoreaderReady: boolean;
   /** Safe display label; set INOREADER_STREAM_LABEL to customize. */
   inoreaderDisplayLabel: string | null;
@@ -27,8 +28,9 @@ export async function GET(): Promise<NextResponse<ArticleDiscoveryInfo>> {
   }
 
   const body: ArticleDiscoveryInfo = {
-    primarySource: inoreaderReady ? "inoreader" : "rss",
-    rssFeedCount: RSS_FEEDS.length,
+    primarySource: inoreaderReady ? "inoreader+six-sources" : "six-sources",
+    sourceCount: GREEN_ORG_DISCOVERY_SOURCES.length,
+    sourceNames: GREEN_ORG_DISCOVERY_SOURCES.map((s) => s.name),
     inoreaderReady,
     inoreaderDisplayLabel,
   };

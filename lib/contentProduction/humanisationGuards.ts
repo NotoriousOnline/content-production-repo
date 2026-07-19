@@ -3,6 +3,7 @@ import {
   detectWinstonAiText,
   getWinstonApiKey,
   toPlainTextForWinston,
+  type EdenWinstonOutput,
 } from "@/lib/winstonAiClient";
 
 export type BannedPhrasesConfig = {
@@ -253,6 +254,13 @@ export type DetectLoopResult = {
   humanScore?: number;
   source?: "winston" | "code";
   creditsRemaining?: number;
+  fallbackReason?: string;
+  /** Raw Eden playground ai_score (0–1). */
+  edenAiScore?: number;
+  /** Eden winstonai output card payload. */
+  edenOutput?: EdenWinstonOutput;
+  provider?: string;
+  cost?: string;
 };
 
 /**
@@ -276,46 +284,42 @@ export async function detectLoop(args: {
     humanScore?: number;
     source?: "winston" | "code";
     creditsRemaining?: number;
+    fallbackReason?: string;
+    edenAiScore?: number;
+    edenOutput?: EdenWinstonOutput;
+    provider?: string;
+    cost?: string;
   } = { score: 100, flagged: [] };
+
+  const toLoop = (passed: boolean): DetectLoopResult => ({
+    article,
+    score: last.score,
+    passed,
+    attempts,
+    humanScore: last.humanScore,
+    source: last.source,
+    creditsRemaining: last.creditsRemaining,
+    fallbackReason: last.fallbackReason,
+    edenAiScore: last.edenAiScore,
+    edenOutput: last.edenOutput,
+    provider: last.provider,
+    cost: last.cost,
+  });
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     attempts = attempt + 1;
     last = await detectFn(article);
     if (last.score < threshold) {
-      return {
-        article,
-        score: last.score,
-        passed: true,
-        attempts,
-        humanScore: last.humanScore,
-        source: last.source,
-        creditsRemaining: last.creditsRemaining,
-      };
+      return toLoop(true);
     }
     if (attempt === maxRetries) {
-      return {
-        article,
-        score: last.score,
-        passed: false,
-        attempts,
-        humanScore: last.humanScore,
-        source: last.source,
-        creditsRemaining: last.creditsRemaining,
-      };
+      return toLoop(false);
     }
     article = await args.voicePassFn(article, last.flagged);
   }
 
   last = await detectFn(article);
-  return {
-    article,
-    score: last.score,
-    passed: last.score < threshold,
-    attempts,
-    humanScore: last.humanScore,
-    source: last.source,
-    creditsRemaining: last.creditsRemaining,
-  };
+  return toLoop(last.score < threshold);
 }
 
 /**
@@ -329,6 +333,10 @@ export async function detectWithWinston(articleText: string): Promise<
     creditsUsed?: number;
     creditsRemaining?: number;
     source: "winston";
+    edenAiScore: number;
+    edenOutput: EdenWinstonOutput;
+    provider?: string;
+    cost?: string;
   }
 > {
   const sentenceHumanFloor = Number(process.env.WINSTON_AI_SENTENCE_HUMAN_FLOOR ?? "50");
@@ -354,7 +362,9 @@ export async function detectWithWinston(articleText: string): Promise<
     if (!flagged.includes(full)) flagged.push(full);
   }
 
-  const codePenalty = Math.min(20, code.blockHits.length * 8 + code.longParagraphs.length * 10);
+  // Threshold/score uses pure Eden Winston AI likelihood (0–100), matching playground.
+  // Small code penalty keeps banned phrases actionable without changing displayed eden ai_score.
+  const codePenalty = Math.min(15, code.blockHits.length * 6 + code.longParagraphs.length * 8);
   const score = Math.min(100, winston.aiScore + codePenalty);
 
   return {
@@ -364,6 +374,10 @@ export async function detectWithWinston(articleText: string): Promise<
     creditsUsed: winston.creditsUsed,
     creditsRemaining: winston.creditsRemaining,
     source: "winston",
+    edenAiScore: winston.edenAiScore,
+    edenOutput: winston.edenOutput,
+    provider: winston.provider,
+    cost: winston.cost,
   };
 }
 
@@ -372,6 +386,12 @@ export type ArticleAiDetectResult = DetectResult & {
   creditsUsed?: number;
   creditsRemaining?: number;
   source: "winston" | "code";
+  /** Set when Eden/Winston failed and local detector was used. */
+  fallbackReason?: string;
+  edenAiScore?: number;
+  edenOutput?: EdenWinstonOutput;
+  provider?: string;
+  cost?: string;
 };
 
 /** Winston preferred; falls back to local banned-phrase / paragraph cadence detector. */
@@ -382,13 +402,24 @@ export async function detectArticleAiScore(articleText: string): Promise<Article
       if (plainLen >= 300) {
         return await detectWithWinston(articleText);
       }
-      console.warn(`[eden-winston] text too short (${plainLen} chars); falling back to code detector`);
+      const reason = `text too short (${plainLen} chars; need 300+)`;
+      console.warn(`[eden-winston] ${reason}; falling back to code detector`);
+      const code = detectAiCadence(articleText);
+      return { ...code, source: "code", fallbackReason: reason };
     } catch (e) {
+      const reason =
+        e instanceof Error
+          ? e.message.includes("ENOTFOUND")
+            ? "DNS failed for api.edenai.run (network/DNS blip)"
+            : e.message.slice(0, 220)
+          : "Eden/Winston request failed";
       console.warn("[eden-winston] detection failed; falling back to code detector:", e);
+      const code = detectAiCadence(articleText);
+      return { ...code, source: "code", fallbackReason: reason };
     }
   }
   const code = detectAiCadence(articleText);
-  return { ...code, source: "code" };
+  return { ...code, source: "code", fallbackReason: "EDEN_AI_API_KEY not set" };
 }
 
 /** @deprecated Prefer detectArticleAiScore — same implementation. */

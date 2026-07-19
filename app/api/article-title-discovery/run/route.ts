@@ -57,7 +57,7 @@ export async function GET(request: Request) {
     });
   }
 
-  console.log("[article-title-discovery/run] Step 2: Generating titles...");
+  console.log("[article-title-discovery/run] Step 2: Building discovery shortlist...");
   let generateRes: Response;
   try {
     generateRes = await fetch(`${base}/api/article-title-discovery/generate-titles`, {
@@ -66,7 +66,7 @@ export async function GET(request: Request) {
       body: JSON.stringify({ articles }),
     });
   } catch (err) {
-    console.error("[article-title-discovery/run] Generate titles network error:", err);
+    console.error("[article-title-discovery/run] Shortlist network error:", err);
     void serverLog({
       level: "error",
       source: "article-title-discovery/run",
@@ -79,7 +79,7 @@ export async function GET(request: Request) {
   }
   if (!generateRes.ok) {
     const errBody = (await generateRes.json().catch(() => ({}))) as { error?: string };
-    console.error("[article-title-discovery/run] Generate titles failed:", generateRes.status, errBody);
+    console.error("[article-title-discovery/run] Shortlist failed:", generateRes.status, errBody);
     void serverLog({
       level: "error",
       source: "article-title-discovery/run",
@@ -88,7 +88,9 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         success: false,
-        error: errBody.error ?? "Generate titles failed — check OPENAI_API_KEY or ANTHROPIC_API_KEY billing.",
+        error:
+          errBody.error ??
+          "Discovery shortlist failed — check OPENAI_API_KEY or ANTHROPIC_API_KEY billing.",
       },
       { status: generateRes.status >= 400 ? generateRes.status : 502 }
     );
@@ -100,12 +102,13 @@ export async function GET(request: Request) {
   };
   const results = Array.isArray(generatePayload.results) ? generatePayload.results : [];
   const generateWarning = generatePayload.warning;
-  console.log("[article-title-discovery/run] Generated", results.length, "titles");
+  console.log("[article-title-discovery/run] Shortlisted", results.length, "candidates");
 
   if (results.length === 0) {
     return NextResponse.json({
       success: false,
-      error: "No titles were generated. Check API keys and billing (OpenAI or Anthropic).",
+      error:
+        "No qualifying stories in the 24h window. Check feeds, categories, or API keys/billing.",
       count: 0,
       results: [],
     }, { status: 503 });

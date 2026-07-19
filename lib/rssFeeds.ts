@@ -1,22 +1,74 @@
-export const RSS_FEEDS = [
-  { name: "ENN", url: "https://www.enn.com/rss" },
-  { name: "ENN Climate", url: "https://www.enn.com/climate/feed" },
-  { name: "ENN Energy", url: "https://www.enn.com/energy/feed" },
-  { name: "ENN Pollution", url: "https://www.enn.com/pollution/feed" },
-  { name: "Treehugger", url: "https://www.treehugger.com/feeds/all" },
-  { name: "The Guardian Environment", url: "https://www.theguardian.com/environment/rss" },
-  { name: "Earth Day", url: "https://www.earthday.org/feed/" },
-  { name: "Yale E360", url: "https://e360.yale.edu/feed" },
+/**
+ * Green.org Daily News Discovery — fixed six sources only.
+ * Do not add outlets outside this list.
+ */
+export type GreenOrgDiscoverySource = {
+  name: string;
+  /** Primary RSS/Atom feed when available. */
+  feedUrl: string | null;
+  /** Optional HTML fallback page if the feed fails or is empty. */
+  htmlUrl?: string;
+  /** Optional Google News RSS query when the outlet blocks direct feeds. */
+  googleNewsQuery?: string;
+  /** Host substrings used to accept Inoreader items from this outlet. */
+  hostMatchers: string[];
+};
+
+export const GREEN_ORG_DISCOVERY_SOURCES: GreenOrgDiscoverySource[] = [
+  {
+    name: "ENN",
+    feedUrl: "https://www.enn.com/rss",
+    htmlUrl: "https://www.enn.com/",
+    hostMatchers: ["enn.com"],
+  },
+  {
+    name: "Bloomberg Green",
+    feedUrl: "https://feeds.bloomberg.com/green.rss",
+    htmlUrl: "https://www.bloomberg.com/green",
+    /** When native feed is blocked, query Google News for Bloomberg Green coverage. */
+    googleNewsQuery: "source:Bloomberg (green OR climate OR renewable OR solar OR EV) when:2d",
+    hostMatchers: ["bloomberg.com"],
+  },
+  {
+    name: "Reuters Environment",
+    feedUrl: "https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best&best-topics=environment",
+    htmlUrl: "https://www.reuters.com/business/environment/",
+    googleNewsQuery: "source:Reuters (environment OR climate OR renewable OR \"clean energy\") when:2d",
+    hostMatchers: ["reuters.com", "reutersagency.com"],
+  },
+  {
+    name: "Carbon Brief",
+    feedUrl: "https://www.carbonbrief.org/feed/",
+    hostMatchers: ["carbonbrief.org"],
+  },
+  {
+    name: "Canary Media",
+    feedUrl: "https://www.canarymedia.com/feed",
+    hostMatchers: ["canarymedia.com"],
+  },
+  {
+    name: "The Guardian Environment",
+    feedUrl: "https://www.theguardian.com/environment/rss",
+    hostMatchers: ["theguardian.com"],
+  },
 ];
 
-/** Non-RSS section pages we scrape for latest headlines. */
-export const HTML_DISCOVERY_SOURCES = [
-  { name: "ENN Climate", url: "https://www.enn.com/climate", parser: "enn" as const },
-  { name: "ENN Energy", url: "https://www.enn.com/energy", parser: "enn" as const },
-  { name: "ENN Pollution", url: "https://www.enn.com/pollution", parser: "enn" as const },
-  { name: "ENN Ecosystems", url: "https://www.enn.com/ecosystems", parser: "enn" as const },
-  { name: "ENN Wildlife", url: "https://www.enn.com/wildlife", parser: "enn" as const },
-  { name: "ENN Policy", url: "https://www.enn.com/environmental-policy", parser: "enn" as const },
-  { name: "CNN Climate", url: "https://www.cnn.com/climate" },
-  { name: "CNN Energy", url: "https://www.cnn.com/business/energy" },
-];
+/** @deprecated Use GREEN_ORG_DISCOVERY_SOURCES — kept for older imports. */
+export const RSS_FEEDS = GREEN_ORG_DISCOVERY_SOURCES.filter((s) => s.feedUrl).map((s) => ({
+  name: s.name,
+  url: s.feedUrl as string,
+}));
+
+/** @deprecated HTML scrapers for non-list outlets removed; six-source feeds only. */
+export const HTML_DISCOVERY_SOURCES: Array<{
+  name: string;
+  url: string;
+  parser?: "enn";
+}> = GREEN_ORG_DISCOVERY_SOURCES.filter((s) => s.htmlUrl).map((s) => ({
+  name: s.name,
+  url: s.htmlUrl as string,
+  ...(s.name === "ENN" ? { parser: "enn" as const } : {}),
+}));
+
+export const GREEN_ORG_CATEGORIES = ["Energy", "Tech", "Climate", "Transportation"] as const;
+export type GreenOrgCategory = (typeof GREEN_ORG_CATEGORIES)[number];
