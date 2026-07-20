@@ -3,23 +3,43 @@
  * Playground: https://app.edenai.run/playground/universal-ai?feature=text%2Fai_detection&models=text%2Fai_detection%2Fwinstonai
  * Docs: https://www.edenai.co/docs/v3/expert-models/features/text/ai-detection
  *
- * Internal convention (matches prior Winston direct client):
- * - humanScore 0–100 (higher = more human)
- * - aiScore 0–100 (higher = more AI) = 100 - humanScore
+ * Eden Winston output (same as playground):
+ * - ai_score: float 0–1 (AI likelihood; higher = more AI)
+ * - items: sentence-level { text, prediction, ai_score, ai_score_detail }
  */
+
+export type EdenWinstonItem = {
+  text: string;
+  prediction: string;
+  ai_score: number;
+  ai_score_detail: number;
+};
+
+/** Raw Eden Universal AI output shape for winstonai (matches playground card). */
+export type EdenWinstonOutput = {
+  ai_score: number;
+  items: EdenWinstonItem[];
+};
 
 export type WinstonSentenceScore = {
   text: string;
   /** Human likelihood 0–100 (higher = more human). */
   score: number;
+  prediction?: string;
+  /** Raw Eden item ai_score 0–1. */
+  aiScore01?: number;
 };
 
 export type WinstonAiDetectionResult = {
   status: number;
   /** Human score 0–100 (higher = more human). */
   humanScore: number;
-  /** AI-risk score 0–100 (higher = more AI) = 100 - humanScore. */
+  /** AI-risk score 0–100 (higher = more AI). */
   aiScore: number;
+  /** Raw Eden ai_score 0–1 (same field as playground). */
+  edenAiScore: number;
+  /** Eden playground-shaped payload for UI. */
+  edenOutput: EdenWinstonOutput;
   sentences: WinstonSentenceScore[];
   creditsUsed?: number;
   creditsRemaining?: number;
@@ -33,6 +53,45 @@ const EDEN_UNIVERSAL_ENDPOINT = "https://api.edenai.run/v3/universal-ai";
 const EDEN_WINSTON_MODEL =
   process.env.EDEN_AI_DETECTION_MODEL?.trim() || "text/ai_detection/winstonai";
 const MIN_CHARS = 300;
+const FETCH_MAX_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.EDEN_AI_FETCH_RETRIES ?? "3") || 3
+);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  const msg =
+    err instanceof Error
+      ? `${err.message} ${String((err as Error & { cause?: unknown }).cause ?? "")}`
+      : String(err);
+  return /ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|fetch failed|network|socket/i.test(
+    msg
+  );
+}
+
+async function fetchEdenWithRetry(init: RequestInit): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= FETCH_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await fetch(EDEN_UNIVERSAL_ENDPOINT, init);
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientNetworkError(err) || attempt === FETCH_MAX_ATTEMPTS) {
+        throw err;
+      }
+      const backoffMs = 400 * attempt;
+      console.warn(
+        `[eden-winston] network error (attempt ${attempt}/${FETCH_MAX_ATTEMPTS}); retrying in ${backoffMs}ms:`,
+        err instanceof Error ? err.message : err
+      );
+      await sleep(backoffMs);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
 
 export function getEdenAiApiKey(): string {
   return (process.env.EDEN_AI_API_KEY ?? process.env.EDENAI_API_KEY ?? "").trim();
@@ -74,57 +133,25 @@ export function markdownToPlainTextForWinston(md: string): string {
 
 export const toPlainTextForWinston = markdownToPlainTextForWinston;
 
-/** Normalize Eden float (0–1 or 0–100) to integer 0–100. */
-function toScore100(raw: unknown): number {
+/** Parse Eden ai_score float (usually 0–1). */
+function toAiScore01(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n)) return 0;
-  if (n >= 0 && n <= 1) return Math.round(n * 100);
-  return Math.max(0, Math.min(100, Math.round(n)));
+  if (n > 1 && n <= 100) return Math.max(0, Math.min(1, n / 100));
+  return Math.max(0, Math.min(1, n));
 }
 
-/**
- * Eden normalizes provider output as `ai_score` = AI-likelihood.
- * Winston's native `score` is human-likelihood — prefer that when original_response is present.
- */
-function resolveScores(args: {
-  outputAiScore: unknown;
-  original?: Record<string, unknown> | null;
-}): { humanScore: number; aiScore: number } {
-  const original = args.original ?? null;
-  if (original && original.score != null) {
-    const humanScore = toScore100(original.score);
-    return { humanScore, aiScore: Math.max(0, Math.min(100, 100 - humanScore)) };
-  }
-  const aiScore = toScore100(args.outputAiScore);
-  return { humanScore: Math.max(0, Math.min(100, 100 - aiScore)), aiScore };
-}
-
-function parseSentences(
-  items: unknown,
-  originalSentences: unknown
-): WinstonSentenceScore[] {
-  const fromOriginal = Array.isArray(originalSentences) ? originalSentences : [];
-  if (fromOriginal.length > 0) {
-    return fromOriginal
-      .map((row) => {
-        const r = (row ?? {}) as Record<string, unknown>;
-        // Winston original: score = human likelihood
-        return {
-          text: String(r.text ?? "").trim(),
-          score: toScore100(r.score),
-        };
-      })
-      .filter((s) => s.text.length > 0);
-  }
-
-  const fromItems = Array.isArray(items) ? items : [];
-  return fromItems
+function parseEdenItems(items: unknown): EdenWinstonItem[] {
+  if (!Array.isArray(items)) return [];
+  return items
     .map((row) => {
       const r = (row ?? {}) as Record<string, unknown>;
-      const aiScore = toScore100(r.ai_score);
+      const ai01 = toAiScore01(r.ai_score);
       return {
         text: String(r.text ?? "").trim(),
-        score: Math.max(0, Math.min(100, 100 - aiScore)),
+        prediction: String(r.prediction ?? "").trim() || (ai01 >= 0.5 ? "ai-generated" : "original"),
+        ai_score: ai01,
+        ai_score_detail: toAiScore01(r.ai_score_detail ?? r.ai_score),
       };
     })
     .filter((s) => s.text.length > 0);
@@ -152,7 +179,7 @@ export async function detectWinstonAiText(
     text = text.slice(0, 150_000);
   }
 
-  const res = await fetch(EDEN_UNIVERSAL_ENDPOINT, {
+  const res = await fetchEdenWithRetry({
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -203,17 +230,30 @@ export async function detectWinstonAiText(
       ? (json.original_response as Record<string, unknown>)
       : null;
 
-  const { humanScore, aiScore } = resolveScores({
-    outputAiScore: output.ai_score,
-    original,
-  });
+  // Prefer Eden-normalized playground field (ai_score 0–1 = AI likelihood)
+  const edenAiScore = toAiScore01(output.ai_score);
+  const items = parseEdenItems(output.items);
+  // Cap payload size for API/UI (Eden playground also collapses long lists)
+  const itemsForUi = items.slice(0, 80);
+  const aiScore = Math.round(edenAiScore * 100);
+  const humanScore = Math.max(0, Math.min(100, 100 - aiScore));
 
-  const sentences = parseSentences(output.items, original?.sentences);
+  const sentences: WinstonSentenceScore[] = items.map((item) => ({
+    text: item.text,
+    score: Math.max(0, Math.min(100, Math.round((1 - item.ai_score) * 100))),
+    prediction: item.prediction,
+    aiScore01: item.ai_score,
+  }));
 
   return {
     status: res.status,
     humanScore,
     aiScore,
+    edenAiScore,
+    edenOutput: {
+      ai_score: edenAiScore,
+      items: itemsForUi,
+    },
     sentences,
     creditsUsed: undefined,
     creditsRemaining: undefined,

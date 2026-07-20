@@ -55,7 +55,7 @@ import {
   type StrainComparisonOutlineH2,
 } from "@/lib/contentProduction/strainComparison";
 import { resolveStrainComparisonVoiceGuide } from "@/lib/contentProduction/strainComparisonVoiceGuide";
-import { enforceHumanisationInCode, detectLoop, detectArticleAiScore } from "@/lib/contentProduction/humanisationGuards";
+import { runArticleAiDetectPass } from "@/lib/contentProduction/articleAiDetectPass";
 import { getSiteById, WP_TOOL_SCOPE } from "@/lib/wpSites";
 
 function stripModelFences(raw: string): string {
@@ -430,17 +430,53 @@ export async function postStrainComparisonGenerate(request: Request) {
       reviewedMarkdown = continuousMarkdown;
     }
 
-    // Step 5b — Winston AI detectLoop (fallback: local code detector)
-    const winstonThreshold = Number(process.env.WINSTON_AI_RISK_THRESHOLD ?? "30");
-    const loop = await detectLoop({
-      article: reviewedMarkdown,
-      threshold: Number.isFinite(winstonThreshold) ? winstonThreshold : 30,
-      maxRetries: Number(process.env.WINSTON_AI_MAX_RETRIES ?? "2") || 2,
-      detectFn: detectArticleAiScore,
-      voicePassFn: (article, flagged) => voicePassFlaggedArticle(article, flagged, voiceGuide),
+    // Step 5b — Winston detectLoop + humanization review if AI score still too high
+    const aiPass = await runArticleAiDetectPass(reviewedMarkdown, {
+      toneHint: voiceGuide,
+      voicePassFn: async (article, flagged) => {
+        if (!flagged.length) {
+          const rewritten = stripModelFences(
+            await callClaude(
+              strainComparisonHumanizePrompt(voiceGuide),
+              [
+                "AI detection score is too high. Humanize the FULL article in Weed.com voice.",
+                "Preserve every number, name, date, URL, and claim. Keep structure and headings.",
+                "",
+                "FULL ARTICLE MARKDOWN:",
+                article,
+              ].join("\n"),
+              { maxTokens: 8192 }
+            )
+          );
+          return hardRewriteIfFlagged(rewritten || article);
+        }
+        return voicePassFlaggedArticle(article, flagged, voiceGuide);
+      },
+      humanizeReviewFn: async (article, ctx) => {
+        const rewritten = stripModelFences(
+          await callClaude(
+            strainComparisonHumanizePrompt(voiceGuide),
+            [
+              "REVIEW HUMANIZATION LAYER — AI score failed the threshold.",
+              `Current AI score: ${ctx.aiScore}/100 (must get below ${ctx.threshold}).`,
+              ctx.humanScore != null ? `Human score: ${ctx.humanScore}/100.` : "",
+              "Rewrite the full article harder in Weed.com voice: kill filler, uneven paragraphs, vary sentence length.",
+              "Preserve every number, name, date, URL, heading, and claim. Do not invent facts.",
+              "",
+              "FULL ARTICLE MARKDOWN:",
+              article,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            { maxTokens: 8192 }
+          )
+        );
+        return hardRewriteIfFlagged(rewritten || article);
+      },
     });
-    reviewedMarkdown = loop.article;
-    const finalGuard = enforceHumanisationInCode(reviewedMarkdown);
+    reviewedMarkdown = aiPass.article;
+    const loop = aiPass.loop;
+    const hr = aiPass.codeGuards.humanizationReview;
     editorReviewMeta = {
       verdict: loop.passed ? "approve" : "send_back",
       light_edits_applied: [
@@ -448,10 +484,16 @@ export async function postStrainComparisonGenerate(request: Request) {
         `detectLoop(${loop.source ?? "unknown"}): aiRisk=${loop.score}${
           loop.humanScore != null ? ` humanScore=${loop.humanScore}` : ""
         } attempts=${loop.attempts} passed=${loop.passed}`,
-        ...finalGuard.blockHits.map((h) => `code-block remaining: "${h.match}"`),
-        ...finalGuard.longParagraphs.map(() => "code: long paragraph remaining after detectLoop"),
+        ...(hr?.applied
+          ? [
+              `humanizationReview: aiScore ${hr.aiScoreBefore} → ${hr.aiScoreAfter} (passed=${hr.passedAfter})`,
+            ]
+          : []),
+        ...aiPass.codeGuards.remainingSendBacks.map(
+          (s) => `code remaining [${s.section}]: ${s.reason}`
+        ),
       ],
-      send_back: loop.passed ? [] : finalGuard.sendBacks,
+      send_back: loop.passed ? [] : aiPass.codeGuards.remainingSendBacks,
     };
 
     // Step 6 — HTML conversion only (preserve editor-reviewed wording)
@@ -499,23 +541,7 @@ export async function postStrainComparisonGenerate(request: Request) {
             },
           }
         : {}),
-      codeGuards: {
-        detectLoop: {
-          source: loop.source ?? "code",
-          score: loop.score,
-          aiScore: loop.score,
-          humanScore: loop.humanScore ?? null,
-          attempts: loop.attempts,
-          passed: loop.passed,
-          threshold: Number(process.env.WINSTON_AI_RISK_THRESHOLD ?? "30") || 30,
-          escalateToHuman: !loop.passed,
-          creditsRemaining: loop.creditsRemaining ?? null,
-        },
-        blockedPhraseCount: finalGuard.blockHits.length,
-        warnPhraseCount: finalGuard.warnHits.length,
-        longParagraphCount: finalGuard.longParagraphs.length,
-        remainingSendBacks: finalGuard.sendBacks,
-      },
+      codeGuards: aiPass.codeGuards,
       seo: {
         focusKeyword: strainComparisonFocusKeyword(a, b),
         metaTitle: strainComparisonMetaTitle(a, b),

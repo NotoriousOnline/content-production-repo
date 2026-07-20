@@ -1,12 +1,6 @@
 import { NextResponse } from "next/server";
 import { errorMessage, serverLog } from "@/lib/serverLog";
-
-type ResultItem = {
-  suggested_title: string;
-  source_title: string;
-  source_url: string;
-  source_name: string;
-};
+import type { TitleDiscoveryOutputItem } from "@/lib/articleDiscoveryTypes";
 
 function formatDate(): string {
   return new Date().toLocaleDateString("en-US", {
@@ -15,6 +9,16 @@ function formatDate(): string {
     month: "long",
     day: "numeric",
   });
+}
+
+function formatCandidate(r: TitleDiscoveryOutputItem, index: number): string[] {
+  return [
+    `${index}. ${r.suggested_title}`,
+    `   Category: ${r.category ?? "—"}`,
+    `   Link: ${r.source_name ? `${r.source_name} — ` : ""}${r.source_url}`,
+    `   Angle: ${r.angle ?? "—"}`,
+    "",
+  ];
 }
 
 export async function POST(request: Request) {
@@ -31,7 +35,7 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: { results?: ResultItem[] };
+  let body: { results?: TitleDiscoveryOutputItem[] };
   try {
     body = await request.json();
   } catch {
@@ -47,17 +51,15 @@ export async function POST(request: Request) {
   }
 
   const lines: string[] = [
-    "📰 *green.org — Daily Title Ideas*",
+    "*green.org — Daily News Discovery Shortlist*",
     formatDate(),
+    "_Surface only — pick the final two yourself._",
     "━━━━━━━━━━━━━━━━━━━━",
     "",
   ];
 
   results.forEach((r, i) => {
-    lines.push(`${i + 1}. ${r.suggested_title}`);
-    lines.push(`   💡 Inspired by: ${r.source_title} (${r.source_name})`);
-    lines.push(`   🔗 ${r.source_url}`);
-    lines.push("");
+    lines.push(...formatCandidate(r, i + 1));
   });
 
   const text = lines.join("\n").trim();

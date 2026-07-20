@@ -1,5 +1,5 @@
 import type { ArticleDiscoveryPayload } from "@/lib/articleDiscoveryTypes";
-import { HTML_DISCOVERY_SOURCES, RSS_FEEDS } from "@/lib/rssFeeds";
+import { GREEN_ORG_DISCOVERY_SOURCES } from "@/lib/rssFeeds";
 
 type DiscoveryArticle = {
   title: string;
@@ -7,6 +7,13 @@ type DiscoveryArticle = {
   source: string;
   pubDate: string;
 };
+
+const USER_AGENT = "SEO-Tools-Platform/1.0 (Green.org News Discovery)";
+
+/** Keep raw pool slightly wider than 24h so clustering can find earlier breaks. */
+const MAX_POOL_AGE_MS = 1000 * 60 * 60 * 36;
+const MAX_PER_SOURCE = 25;
+const MAX_TOTAL = 80;
 
 function stripCdata(text: string): string {
   return text
@@ -51,15 +58,15 @@ function parseTime(pubDate: string): number {
   return Number.isFinite(t) ? t : 0;
 }
 
-/** Skip photo credits, JS fragments, and other non-headline anchor text from HTML scrapers. */
+/** Skip photo credits, JS fragments, and other non-headline text. */
 export function isPlausibleArticleTitle(title: string): boolean {
   const t = title.trim();
   if (t.length < 20 || t.length > 220) return false;
   if (/function\s+\w+|=>|{\s*const|onerror|removeAttribute/i.test(t)) return false;
   if (/^[\w.]+\/(Reuters|AP|Getty|WHOI)/i.test(t)) return false;
   if (/^[\w.]+\s*\/\s*(Reuters|AP|Getty)/i.test(t)) return false;
-  if (/^\d+:\d+$/.test(t)) return false; // video duration only
-  if ((t.match(/\//g) ?? []).length >= 3 && t.length < 80) return false; // photo credit paths
+  if (/^\d+:\d+$/.test(t)) return false;
+  if ((t.match(/\//g) ?? []).length >= 3 && t.length < 80) return false;
   return true;
 }
 
@@ -71,7 +78,10 @@ function parseItemsFromXml(xml: string, source: string): DiscoveryArticle[] {
     const itemXml = match[1];
     const title = extractTagContent(itemXml, "title");
     const url = extractLink(itemXml);
-    const pubDate = extractTagContent(itemXml, "pubDate");
+    const pubDate =
+      extractTagContent(itemXml, "pubDate") ??
+      extractTagContent(itemXml, "dc:date") ??
+      extractTagContent(itemXml, "updated");
     if (title && url && isPlausibleArticleTitle(title)) {
       articles.push({
         title,
@@ -81,7 +91,6 @@ function parseItemsFromXml(xml: string, source: string): DiscoveryArticle[] {
       });
     }
   }
-  // Atom support (<entry>) for feeds that aren't RSS <item>.
   const entryRegex = /<entry[^>]*>([\s\S]*?)<\/entry>/gi;
   while ((match = entryRegex.exec(xml)) !== null) {
     const entryXml = match[1];
@@ -90,7 +99,8 @@ function parseItemsFromXml(xml: string, source: string): DiscoveryArticle[] {
     const pubDate =
       extractTagContent(entryXml, "updated") ??
       extractTagContent(entryXml, "published") ??
-      extractTagContent(entryXml, "pubDate");
+      extractTagContent(entryXml, "pubDate") ??
+      extractTagContent(entryXml, "dc:date");
     if (title && url && isPlausibleArticleTitle(title)) {
       articles.push({
         title,
@@ -144,22 +154,25 @@ function parseEnnHtmlArticles(html: string, source: string): DiscoveryArticle[] 
   return out.slice(0, 40);
 }
 
-function parseCnnHtmlArticles(html: string, source: string): DiscoveryArticle[] {
+/** Generic HTML headline scrape for section pages (Guardian-style / Canary cards). */
+function parseGenericHtmlArticles(html: string, source: string, baseHost: string): DiscoveryArticle[] {
   const out: DiscoveryArticle[] = [];
   const seen = new Set<string>();
   const anchorRegex = /<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
   let m: RegExpExecArray | null;
   while ((m = anchorRegex.exec(html)) !== null) {
-    const hrefRaw = m[1] ?? "";
     const textRaw = (m[2] ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    if (!hrefRaw || !textRaw) continue;
     if (!isPlausibleArticleTitle(textRaw)) continue;
-    let href = hrefRaw.trim();
-    if (href.startsWith("/")) href = `https://www.cnn.com${href}`;
-    if (!/^https?:\/\/(www\.)?cnn\.com\//i.test(href)) continue;
-    // Keep real article URLs and avoid navigation/index pages.
-    if (!/\/\d{4}\/\d{2}\/\d{2}\//.test(href)) continue;
-    if (textRaw.length < 24) continue;
+    let href = (m[1] ?? "").trim();
+    if (!href || href.startsWith("#") || href.startsWith("javascript:")) continue;
+    if (href.startsWith("/")) {
+      try {
+        href = new URL(href, `https://${baseHost}`).toString();
+      } catch {
+        continue;
+      }
+    }
+    if (!href.includes(baseHost)) continue;
     const url = canonicalizeUrl(href);
     if (seen.has(url)) continue;
     seen.add(url);
@@ -169,63 +182,109 @@ function parseCnnHtmlArticles(html: string, source: string): DiscoveryArticle[] 
   return out;
 }
 
-const PRIORITY_FEEDS = [
-  "ENN",
-  "ENN Climate",
-  "ENN Energy",
-  "ENN Pollution",
-  "ENN Ecosystems",
-  "ENN Wildlife",
-  "ENN Policy",
-  "The Guardian Environment",
-  "CNN Climate",
-  "CNN Energy",
-];
+function hostFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
 
-/** Same pool logic as the original Article Title Discovery RSS fetcher. */
+export function isAllowedGreenOrgDiscoveryUrl(url: string): boolean {
+  const host = hostFromUrl(url).toLowerCase();
+  if (!host) return false;
+  return GREEN_ORG_DISCOVERY_SOURCES.some((s) =>
+    s.hostMatchers.some((m) => host === m || host.endsWith(`.${m}`))
+  );
+}
+
+async function fetchFeed(feedUrl: string, source: string): Promise<DiscoveryArticle[]> {
+  const res = await fetch(feedUrl, {
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const xml = await res.text();
+  return parseItemsFromXml(xml, source);
+}
+
+async function fetchHtmlFallback(
+  htmlUrl: string,
+  source: string
+): Promise<DiscoveryArticle[]> {
+  const res = await fetch(htmlUrl, {
+    headers: { "User-Agent": USER_AGENT, Accept: "text/html" },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const html = await res.text();
+  if (source === "ENN") return parseEnnHtmlArticles(html, source);
+  const host = hostFromUrl(htmlUrl) || "example.com";
+  return parseGenericHtmlArticles(html, source, host);
+}
+
+/** Google News RSS scoped to an outlet — used when native feeds are paywalled/blocked. */
+async function fetchGoogleNewsFallback(
+  query: string,
+  source: string
+): Promise<DiscoveryArticle[]> {
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+  const items = await fetchFeed(url, source);
+  return items
+    .map((a) => ({
+      ...a,
+      // Google News links redirect; keep title + pubDate for shortlist clustering.
+      source,
+    }))
+    .filter((a) => isPlausibleArticleTitle(a.title));
+}
+
+/**
+ * Pull recent headlines from the six Green.org discovery sources only.
+ * Returns a raw pool (with pubDate when available) for the shortlist agent.
+ */
 export async function fetchDiscoveryArticlesFromRss(): Promise<ArticleDiscoveryPayload[]> {
   const bySource: Record<string, DiscoveryArticle[]> = {};
   const now = Date.now();
-  const maxAgeMs = 1000 * 60 * 60 * 24 * 10; // keep articles from the last 10 days
 
-  const fetchOrder = [
-    ...RSS_FEEDS.filter((f) => PRIORITY_FEEDS.includes(f.name)),
-    ...RSS_FEEDS.filter((f) => !PRIORITY_FEEDS.includes(f.name)),
-  ];
+  for (const src of GREEN_ORG_DISCOVERY_SOURCES) {
+    let articles: DiscoveryArticle[] = [];
+    if (src.feedUrl) {
+      try {
+        articles = await fetchFeed(src.feedUrl, src.name);
+      } catch (err) {
+        console.error(`[article-discovery-rss] Feed ${src.name} failed:`, err);
+      }
+    }
+    if (articles.length === 0 && src.googleNewsQuery) {
+      try {
+        articles = await fetchGoogleNewsFallback(src.googleNewsQuery, src.name);
+      } catch (err) {
+        console.error(`[article-discovery-rss] Google News ${src.name} failed:`, err);
+      }
+    }
+    if (articles.length === 0 && src.htmlUrl) {
+      try {
+        articles = await fetchHtmlFallback(src.htmlUrl, src.name);
+      } catch (err) {
+        console.error(`[article-discovery-rss] HTML ${src.name} failed:`, err);
+      }
+    }
 
-  for (const feed of fetchOrder) {
-    try {
-      const res = await fetch(feed.url, {
-        headers: { "User-Agent": "SEO-Tools-Platform/1.0" },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const xml = await res.text();
-      const articles = parseItemsFromXml(xml, feed.name);
-      bySource[feed.name] = articles
-        .filter((a) => {
-          const t = parseTime(a.pubDate);
-          if (t <= 0) return true;
-          return now - t <= maxAgeMs;
-        })
-        .sort((a, b) => parseTime(b.pubDate) - parseTime(a.pubDate));
-    } catch (err) {
-      console.error(`[article-discovery-rss] Feed ${feed.name} failed:`, err);
-    }
-  }
-  for (const src of HTML_DISCOVERY_SOURCES) {
-    try {
-      const res = await fetch(src.url, {
-        headers: { "User-Agent": "SEO-Tools-Platform/1.0", Accept: "text/html" },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const html = await res.text();
-      bySource[src.name] =
-        (src as { parser?: string }).parser === "enn"
-          ? parseEnnHtmlArticles(html, src.name)
-          : parseCnnHtmlArticles(html, src.name);
-    } catch (err) {
-      console.error(`[article-discovery-rss] HTML source ${src.name} failed:`, err);
-    }
+    bySource[src.name] = articles
+      .filter((a) => {
+        // Google News redirect URLs won't match hostMatchers — allow those from named fallbacks.
+        const isGoogleNews = /news\.google\.com/i.test(a.url);
+        if (a.url && !isGoogleNews && !isAllowedGreenOrgDiscoveryUrl(a.url)) return false;
+        const t = parseTime(a.pubDate);
+        if (t <= 0) return true;
+        return now - t <= MAX_POOL_AGE_MS;
+      })
+      .sort((a, b) => parseTime(b.pubDate) - parseTime(a.pubDate))
+      .slice(0, MAX_PER_SOURCE);
   }
 
   const result: DiscoveryArticle[] = [];
@@ -239,36 +298,32 @@ export async function fetchDiscoveryArticlesFromRss(): Promise<ArticleDiscoveryP
     seenTitles.add(t);
     result.push({ ...a, url: u });
   };
-  const addFrom = (source: string, max: number) => {
-    const articles = bySource[source] ?? [];
-    for (let i = 0; i < Math.min(max, articles.length) && result.length < 20; i++) {
-      pushUnique(articles[i]);
-    }
-  };
 
-  // ENN is the priority site: take more from ENN section pages first.
-  addFrom("ENN Climate", 4);
-  addFrom("ENN Energy", 4);
-  addFrom("ENN Pollution", 3);
-  addFrom("ENN Ecosystems", 2);
-  addFrom("ENN Wildlife", 2);
-  addFrom("ENN Policy", 2);
-  addFrom("ENN", 6);
-  addFrom("CNN Climate", 6);
-  addFrom("CNN Energy", 6);
-  addFrom("The Guardian Environment", 10);
-  const others = Object.entries(bySource)
-    .filter(([name]) => !PRIORITY_FEEDS.includes(name))
-    .flatMap(([, articles]) => articles)
-    .sort((a, b) => {
-      const dateA = a.pubDate ? new Date(a.pubDate).getTime() : 0;
-      const dateB = b.pubDate ? new Date(b.pubDate).getTime() : 0;
-      return dateB - dateA;
-    });
-  for (const a of others) {
-    if (result.length >= 20) break;
-    pushUnique(a);
+  // Round-robin so one outlet cannot dominate the pool.
+  let added = true;
+  let round = 0;
+  while (added && result.length < MAX_TOTAL) {
+    added = false;
+    for (const src of GREEN_ORG_DISCOVERY_SOURCES) {
+      const list = bySource[src.name] ?? [];
+      if (round < list.length) {
+        pushUnique(list[round]);
+        added = true;
+        if (result.length >= MAX_TOTAL) break;
+      }
+    }
+    round += 1;
   }
 
-  return result.slice(0, 20).map(({ title, url, source }) => ({ title, url, source }));
+  console.log(
+    `[article-discovery-rss] Pool ${result.length} from six sources:`,
+    GREEN_ORG_DISCOVERY_SOURCES.map((s) => `${s.name}=${(bySource[s.name] ?? []).length}`).join(", ")
+  );
+
+  return result.map(({ title, url, source, pubDate }) => ({
+    title,
+    url,
+    source,
+    pubDate: pubDate || undefined,
+  }));
 }

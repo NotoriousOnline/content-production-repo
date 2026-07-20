@@ -12,7 +12,7 @@ export const dashboard = {
 
 /** Short labels for home cards (in addition to the full tool title from registry). */
 export const toolDashboardLabel: Record<string, string> = {
-  "article-title-discovery": "Ideas & angles",
+  "article-title-discovery": "News shortlist",
   "content-production": "Publish anywhere",
   "weed-com-content-production": "Weed.com editorial",
   "farm-com-content-production": "Farm.com Shopify",

@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import { generateDiscoveryTitles } from "@/lib/articleDiscoveryGenerateTitles";
 
+export const maxDuration = 120;
+
 export async function POST(request: Request) {
-  let body: { articles?: { title: string; url: string; source: string }[] };
+  let body: {
+    articles?: { title: string; url: string; source: string; pubDate?: string }[];
+  };
   try {
     body = await request.json();
   } catch {
@@ -22,7 +26,7 @@ export async function POST(request: Request) {
   if (outcome.results.length === 0) {
     return NextResponse.json(
       {
-        error: outcome.error ?? "No titles could be generated",
+        error: outcome.error ?? "No qualifying discovery candidates",
         provider: outcome.provider,
         results: [],
       },

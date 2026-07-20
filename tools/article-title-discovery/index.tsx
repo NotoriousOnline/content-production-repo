@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { RSS_FEEDS } from "@/lib/rssFeeds";
+import { GREEN_ORG_DISCOVERY_SOURCES } from "@/lib/rssFeeds";
+import type { TitleDiscoveryOutputItem } from "@/lib/articleDiscoveryTypes";
 
 function getNextRunAt(): Date {
   const now = new Date();
@@ -24,33 +25,10 @@ function formatCountdown(ms: number): string {
   return `${h}h ${m}m ${s}s`;
 }
 
-const SOURCE_PILL_NAMES: Record<string, string> = {
-  ENN: "ENN",
-  "ENN Climate": "ENN Climate",
-  "ENN Energy": "ENN Energy",
-  "ENN Pollution": "ENN Pollution",
-  "ENN Ecosystems": "ENN Ecosystems",
-  "ENN Wildlife": "ENN Wildlife",
-  "ENN Policy": "ENN Policy",
-  "CNN Climate": "CNN Climate",
-  "CNN Energy": "CNN Energy",
-  Treehugger: "Treehugger",
-  "The Guardian Environment": "The Guardian",
-  "Earth Day": "Earth Day",
-  "Yale E360": "Yale E360",
-  Inoreader: "Inoreader",
-};
-
-type ResultItem = {
-  suggested_title: string;
-  source_title: string;
-  source_url: string;
-  source_name: string;
-};
-
 type DiscoveryInfo = {
-  primarySource: "inoreader" | "rss";
-  rssFeedCount: number;
+  primarySource: "six-sources" | "inoreader+six-sources";
+  sourceCount: number;
+  sourceNames: string[];
   inoreaderReady: boolean;
   inoreaderDisplayLabel: string | null;
 };
@@ -60,7 +38,7 @@ export default function ArticleTitleDiscoveryTool() {
   const [success, setSuccess] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [results, setResults] = useState<ResultItem[]>([]);
+  const [results, setResults] = useState<TitleDiscoveryOutputItem[]>([]);
   const [lastRun, setLastRun] = useState<Date | null>(null);
   const [countdown, setCountdown] = useState("");
   const [discoveryInfo, setDiscoveryInfo] = useState<DiscoveryInfo | null>(null);
@@ -109,7 +87,9 @@ export default function ArticleTitleDiscoveryTool() {
       setResults(data.results ?? []);
       setLastRun(new Date());
       if (data.warning) setWarning(data.warning);
-      setSuccess(`Done — ${data.count ?? 0} title ideas sent to Slack${data.provider ? ` (via ${data.provider})` : ""}`);
+      setSuccess(
+        `Done — ${data.count ?? 0} shortlist candidates sent to Slack${data.provider ? ` (via ${data.provider})` : ""}. Pick the final two yourself.`
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
@@ -117,63 +97,53 @@ export default function ArticleTitleDiscoveryTool() {
     }
   };
 
+  const sourceNames = discoveryInfo?.sourceNames?.length
+    ? discoveryInfo.sourceNames
+    : GREEN_ORG_DISCOVERY_SOURCES.map((s) => s.name);
+
   return (
     <div className="space-y-8">
-      {/* Title/description live in ToolLayout via config — only tool-specific status here */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center rounded-full bg-violet-100 px-3 py-0.5 text-xs font-medium text-violet-800">
           Daily 1 PM ET
         </span>
-        {discoveryInfo?.primarySource === "inoreader" ? (
+        <span className="inline-flex items-center rounded-full bg-emerald-100 px-3 py-0.5 text-xs font-medium text-emerald-900">
+          6 sources · Energy / Tech / Climate / Transportation
+        </span>
+        <span className="inline-flex items-center rounded-full bg-amber-100 px-3 py-0.5 text-xs font-medium text-amber-900">
+          24h freshness window
+        </span>
+        {discoveryInfo?.inoreaderReady ? (
           <span className="inline-flex items-center rounded-full bg-sky-100 px-3 py-0.5 text-xs font-medium text-sky-900">
-            Inoreader
-            {discoveryInfo?.inoreaderDisplayLabel ? ` · ${discoveryInfo.inoreaderDisplayLabel}` : ""}
+            Inoreader merge
+            {discoveryInfo.inoreaderDisplayLabel ? ` · ${discoveryInfo.inoreaderDisplayLabel}` : ""}
           </span>
-        ) : (
-          <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-0.5 text-xs font-medium text-slate-700">
-            {discoveryInfo?.rssFeedCount ?? RSS_FEEDS.length} RSS sources
-          </span>
-        )}
+        ) : null}
         <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-mono font-medium text-slate-700">
           <span className="text-slate-500">Next run in:</span>
           {countdown || "—"}
         </span>
       </div>
 
-      {/* Sources list */}
       <div>
-        <h2 className="text-sm font-medium text-slate-500">
-          {discoveryInfo?.primarySource === "inoreader" ? "Article sources" : "RSS sources"}
-        </h2>
-        {discoveryInfo?.primarySource === "inoreader" ? (
-          <div className="mt-2 space-y-2 text-sm text-slate-600">
-            <p>
-              Articles are loaded from your{" "}
-              <strong className="font-medium text-slate-800">Inoreader</strong> folder/stream (
-              {discoveryInfo?.inoreaderDisplayLabel ?? "configured stream"}). Add or remove blogs in
-              Inoreader; the next run picks up the newest items from that stream.
-            </p>
-            <p className="text-xs text-slate-500">
-              If Inoreader fails, the app can fall back to built-in RSS feeds (see{" "}
-              <code className="rounded bg-slate-100 px-1">INOREADER_FALLBACK_TO_RSS</code> in{" "}
-              <code className="rounded bg-slate-100 px-1">.env.example</code>).
-            </p>
-          </div>
-        ) : (
-          <div className="mt-2 flex flex-wrap gap-2">
-            {RSS_FEEDS.map((feed) => (
-              <span
-                key={feed.name}
-                className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600"
-              >
-                {SOURCE_PILL_NAMES[feed.name] ?? feed.name}
-              </span>
-            ))}
-          </div>
-        )}
+        <h2 className="text-sm font-medium text-slate-500">Sources (all six, every run)</h2>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {sourceNames.map((name) => (
+            <span
+              key={name}
+              className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600"
+            >
+              {name}
+            </span>
+          ))}
+        </div>
+        <p className="mt-3 text-sm text-slate-600">
+          Scans these outlets only, clusters duplicate coverage, keeps stories that fit a category and
+          can still publish inside 24 hours of break time, then returns a shortlist. You pick the final
+          two.
+        </p>
       </div>
 
-      {/* Manual run */}
       <div>
         <button
           type="button"
@@ -204,7 +174,7 @@ export default function ArticleTitleDiscoveryTool() {
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                 />
               </svg>
-              Fetching articles and generating titles...
+              Scanning sources and building shortlist...
             </>
           ) : (
             "Run Now"
@@ -228,38 +198,44 @@ export default function ArticleTitleDiscoveryTool() {
         )}
       </div>
 
-      {/* Section 4 — Results Preview */}
       {results.length > 0 && (
         <div>
-          <h2 className="text-sm font-medium text-slate-500">Results Preview</h2>
+          <h2 className="text-sm font-medium text-slate-500">
+            Shortlist preview ({results.length}) — pick the final two yourself
+          </h2>
           <div className="mt-4 space-y-4">
             {results.map((r, i) => (
               <div
-                key={i}
+                key={`${r.source_url}-${i}`}
                 className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
               >
-                <p className="text-lg font-semibold text-slate-900">{r.suggested_title}</p>
-                <p className="mt-1 text-sm text-slate-500">Inspired by: {r.source_title}</p>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                    {SOURCE_PILL_NAMES[r.source_name] ?? r.source_name}
-                  </span>
-                  <a
-                    href={r.source_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm text-violet-600 hover:underline"
-                  >
-                    {r.source_url}
-                  </a>
-                </div>
+                <p className="text-lg font-semibold text-slate-900">
+                  {i + 1}. {r.suggested_title}
+                </p>
+                {r.category ? (
+                  <p className="mt-2 text-sm text-slate-700">
+                    <span className="font-medium text-slate-800">Category:</span> {r.category}
+                  </p>
+                ) : null}
+                {r.angle ? (
+                  <p className="mt-2 text-sm text-slate-700">
+                    <span className="font-medium text-slate-800">Angle:</span> {r.angle}
+                  </p>
+                ) : null}
+                <a
+                  href={r.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-block text-sm text-violet-600 hover:underline"
+                >
+                  {r.source_name ? `${r.source_name} — ${r.source_url}` : r.source_url}
+                </a>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Last run */}
       <div className="text-sm text-slate-500">
         Last run: {lastRun ? lastRun.toLocaleString() : "never"}
       </div>
