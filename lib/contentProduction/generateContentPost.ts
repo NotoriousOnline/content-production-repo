@@ -20,8 +20,10 @@ import { appendTabibiSourcesFooter, pickTabibiSourcesForFooter } from "@/lib/tab
 import { runArticleAiDetectPass } from "@/lib/contentProduction/articleAiDetectPass";
 import {
   ensureWeedLearnComplete,
+  ensureWeedLegalFooter,
   maxTokensForWeedArticleHtml,
 } from "@/lib/contentProduction/weedLearnCompleteness";
+import { sanitizeContentDashes } from "@/lib/contentProduction/typographySanitize";
 import { getSiteById, WP_TOOL_SCOPE, type WPToolScope } from "@/lib/wpSites";
 import { fetchAllProductsForLinkLibrary, getPosts } from "@/lib/wordpressClient";
 
@@ -39,7 +41,7 @@ const MAX_TRANSCRIPT_CHARS = 40_000;
 const CONTENT_REFINEMENT_SYSTEM_TAIL = `You are editing existing article HTML (refinement pass). The user message contains CURRENT HTML and EDITOR INSTRUCTIONS.
 
 Apply the instructions. Output the full revised article as raw HTML only (no markdown code fences, no triple backticks). Do not output <!DOCTYPE>, <html>, or <h1> (the CMS sets the post title separately).
-Never use the em dash character (Unicode U+2014). Use a spaced hyphen " - " instead.
+Never use the em dash character (Unicode U+2014) or a spaced hyphen " - " as a pause. Use commas, semicolons, or parentheses instead.
 
 Preserve valid structure, inline styles, and classes (e.g. expert-box, Inter font rules) unless the instructions require changes. When adding or changing internal links, use only URLs from the Editorial posts and pages / Products lists in the user message when those lists are non-empty.
 
@@ -49,7 +51,7 @@ When the user message includes "TABIBI GOLD STANDARD CITATION LIBRARY", every Pu
 If instructions would violate citation safety or the Bible, prefer the smallest safe edit (hedge claims, omit unsafe citations) over inventing sources.`;
 
 function replaceEmDashes(html: string): string {
-  return html.replace(/\u2014/g, " - ").replace(/\u2013/g, "-");
+  return sanitizeContentDashes(html);
 }
 
 const WEED_IMPORTANT_NOTICE_HTML = `<div style="margin: 2rem 0; padding: 1.25rem 1.5rem; border-radius: 0.75rem; background-color: #fffbeb; border: 1px solid #f59e0b; font-family: Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
@@ -306,7 +308,7 @@ MANDATORY RULES
 - Typography (Expert Insight only — hard rule): Inside the entire expert-box block (class expert-box), every element that displays text MUST use exactly font-family:Inter,sans-serif!important (include !important on every inline style so pasted Word spans and theme link fonts cannot override). Inter plus the generic sans-serif keyword only. Do not use system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, or any other named font in that subtree. Apply on the outer expert-box div, the header row, pill, name, both body <p> tags, the expert-cite line container, and the PMID <a>.
 - Voice: knowledgeable, warm, direct, never condescending, never hype/fear, honest on evidence limits.
 - Use second person ("you") throughout.
-- No em dash character.
+- No em dash character and no spaced hyphen " - " pauses.
 - Intro must open with a real tension/question, no generic scene-setting.
 - Keyword placement: do not stuff or force the primary target keyword at the very start of the first paragraph, and do not place it inside any heading (<h2>, <h3>, <h4>). Use natural wording; the topic may appear later in body copy where it reads normally.
 - Paragraphs max 4 sentences, one idea per paragraph.
@@ -619,8 +621,7 @@ Never wrap the output in code fences: do not use triple backticks, do not write 
 Do NOT put the article title in the body: no <h1> and no title heading. The CMS sets the post title separately.
 Start the body with an introduction using <p>, or the first <h2> section heading. Use <h2> and <h3> only inside the article. Target ${wordCount} words with tight control: keep visible text in ${wordCountBounds(wordCount).min}-${wordCountBounds(wordCount).max} words (HTML tags do not count). In the main body, include editorial internal links (<a>) to post/page URLs from the **Editorial posts and pages** list, chosen for maximum relevance to nearby copy. ${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? "For Weed.com, include exactly 3 editorial links when 3+ are available (otherwise use all available)." : "Use 1 to 3 editorial links when available."} You may add separate product/Shop Now usage from the **Products** list; editorial links are not optional when the editorial list is non-empty. Use descriptive anchor text. Do not add external links${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? " except up to three PubMed PMID links, only inside Dr. Tabibi Expert Insight expert-cite lines (and duplicated in Sources per Bible)" : ""}.
 
-Typography: Never use the em dash character (Unicode U+2014). Do not type "—". Use commas,
-semicolons, parentheses, or a spaced hyphen " - " instead when you need a pause or aside.
+Typography: Never use the em dash character (Unicode U+2014). Do not type "—". Do not use a spaced hyphen " - " as a pause. Use commas, semicolons, or parentheses instead when you need a pause or aside.
 
 Structure: Near the end, include FAQs before Sources/footer:
 ${ 
@@ -782,6 +783,7 @@ Output the complete revised HTML only. No markdown code fences.`;
       }
       content = stripInBodyImportantNotice(content);
       content = appendWeedImportantNoticeIfRequested(content, includeImportantNotice);
+      content = ensureWeedLegalFooter(content);
     }
 
     // Winston AI detectLoop (banned phrases / long paragraphs / AI-risk). Shared across content tools.
@@ -796,6 +798,7 @@ Output the complete revised HTML only. No markdown code fences.`;
       }
       content = stripInBodyImportantNotice(content);
       content = appendWeedImportantNoticeIfRequested(content, includeImportantNotice);
+      content = ensureWeedLegalFooter(content);
     }
 
     const tabibiSourcesPicked: TabibiPmidEntry[] =

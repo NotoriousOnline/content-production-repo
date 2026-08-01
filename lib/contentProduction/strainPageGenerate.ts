@@ -5,6 +5,7 @@ import { runArticleAiDetectPass } from "@/lib/contentProduction/articleAiDetectP
 import { ensureStrainPageComplete } from "@/lib/contentProduction/strainPageCompleteness";
 import {
   countAllowlistedStrainPageLinks,
+  dedupeStrainPageInternalLinks,
   ensureStrainPageInternalLinks,
   formatVerifiedStrainPageLinksForPrompt,
   gatherVerifiedStrainPageLinks,
@@ -84,6 +85,7 @@ export async function postStrainPageGenerate(request: Request) {
     html = sanitizeStrainPageLinks(html, verifiedWithFields.allowlist, siteOrigin);
     html = ensureStrainPageSeedsSection(html, name, siteOrigin);
     html = ensureStrainPageClonesSection(html, name, siteOrigin);
+    html = dedupeStrainPageInternalLinks(html, siteOrigin);
 
     const aiPass = await runArticleAiDetectPass(html, {
       toneHint: site.tone_prompt ?? undefined,
@@ -93,6 +95,7 @@ export async function postStrainPageGenerate(request: Request) {
     html = ensureStrainPageSeedsSection(html, name, siteOrigin);
     html = ensureStrainPageClonesSection(html, name, siteOrigin);
     html = sanitizeStrainPageLinks(html, verifiedWithFields.allowlist, siteOrigin);
+    html = dedupeStrainPageInternalLinks(html, siteOrigin);
 
     const internalLinkCount = countAllowlistedStrainPageLinks(
       html,

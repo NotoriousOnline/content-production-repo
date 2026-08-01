@@ -9,6 +9,7 @@ import {
   strainPageSystemPrompt,
 } from "@/lib/contentProduction/strainPage";
 import { countAllowlistedStrainPageLinks } from "@/lib/contentProduction/strainPageLinks";
+import { sanitizeContentDashes } from "@/lib/contentProduction/typographySanitize";
 import { countCompleteWeedFaqPairs, extractWeedFaqSection } from "@/lib/contentProduction/weedLearnCompleteness";
 
 export const STRAIN_PAGE_MIN_INTERNAL_LINKS = 4;
@@ -100,7 +101,9 @@ export function auditStrainPageHtml(
     reasons.push(`only ${internalLinkCount} verified internal link(s), need at least ${minLinks}`);
   }
 
-  if (/\u2014/.test(html)) reasons.push("contains em dash (U+2014)");
+  if (/\u2014/.test(html) || /[A-Za-z0-9)]\s+-\s+[A-Za-z(]/.test(html)) {
+    reasons.push("contains em dash or spaced hyphen pause");
+  }
 
   return { needsRepair: reasons.length > 0, reasons, wordCount, faqPairs, internalLinkCount };
 }
@@ -111,7 +114,7 @@ export async function ensureStrainPageComplete(
   allowlist: string[] = [],
   siteOrigin = ""
 ): Promise<string> {
-  let current = html.replace(/\u2014/g, " - ");
+  let current = sanitizeContentDashes(html);
   for (let pass = 0; pass < 2; pass++) {
     const audit = auditStrainPageHtml(current, strainName, allowlist, siteOrigin);
     if (!audit.needsRepair) return current;
@@ -128,7 +131,7 @@ REPAIR PASS: Fix ONLY the issues listed. Return the FULL revised JSON with custo
       if (objMatch) cleaned = objMatch[0];
       const parsed = JSON.parse(cleaned) as { html?: string };
       if (typeof parsed.html === "string" && parsed.html.length > 200) {
-        current = parsed.html.replace(/\u2014/g, " - ").trim();
+        current = sanitizeContentDashes(parsed.html.trim());
       }
     } catch (e) {
       console.warn("[strain-page] repair pass failed:", errorMessage(e));

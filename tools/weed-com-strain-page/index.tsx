@@ -792,6 +792,12 @@ export default function WeedComStrainPageTool() {
             <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
               Draft {publishResult.postId ? `saved (ID ${publishResult.postId})` : "published"}.
               {publishResult.customFieldsSet && " Custom fields written."}
+              {publishResult.rankMath?.focusKeyphrase
+                ? ` Rank Math focus keyword: “${publishResult.rankMath.focusKeyphrase}”.`
+                : ""}
+              {publishResult.rankMath && publishResult.rankMath.metaDescriptionSet === false
+                ? " Rank Math meta may not have saved — check wp-admin SEO panel."
+                : ""}
               {publishResult.author && "id" in publishResult.author
                 ? ` Author: Editorial Team (#${publishResult.author.id}).`
                 : publishResult.author?.warning

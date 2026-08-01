@@ -4,6 +4,7 @@ import type {
   DiscoveryCandidate,
   TitleDiscoveryOutputItem,
 } from "@/lib/articleDiscoveryTypes";
+import { isGoogleNewsArticleUrl, resolveGoogleNewsUrls } from "@/lib/resolveGoogleNewsUrl";
 import { GREEN_ORG_CATEGORIES, type GreenOrgCategory } from "@/lib/rssFeeds";
 
 const SYSTEM_PROMPT = `You are the news discovery agent for Green.org. Every morning you scan a fixed set of six sources, filter the day's stories against our editorial categories and freshness window, and return a clean shortlist of candidates. You do not pick the final two. You surface everything that qualifies so a human can choose.
@@ -68,7 +69,7 @@ also_covered_by: "None" or a short comma-separated list of other outlets from th
 distribution_fit: one of "LinkedIn", "social", "Saturday email", or a combination like "LinkedIn / social".
 angle: one line on why this could work and how Green.org would frame it.
 deadline: break time + 24h as a readable UTC string, or "unknown — freshness risk" when unconfirmed.
-If a source_url is a news.google.com redirect, still use it, set source_name to the outlet (e.g. Reuters Environment), and prefer a direct outlet URL from another clustered item when available.`;
+source_url must be the direct publisher article URL from the fetched items (reuters.com, bloomberg.com, etc). Never use news.google.com links.`;
 
 function buildUserPrompt(articles: ArticleDiscoveryPayload[], nowIso: string): string {
   const lines = articles.map((a, i) => {
@@ -213,6 +214,28 @@ function applyHardFreshnessCut(candidates: DiscoveryCandidate[]): DiscoveryCandi
     // Need buffer to brief/write/publish — drop if already past ~22h
     return c.hours_ago < 22;
   });
+}
+
+/** Resolve any leftover Google News redirects; drop ones that cannot be decoded. */
+async function ensurePublisherUrls(candidates: DiscoveryCandidate[]): Promise<DiscoveryCandidate[]> {
+  const googleUrls = candidates.map((c) => c.source_url).filter(isGoogleNewsArticleUrl);
+  if (googleUrls.length === 0) return candidates;
+
+  const resolved = await resolveGoogleNewsUrls(googleUrls);
+  const out: DiscoveryCandidate[] = [];
+  for (const c of candidates) {
+    if (!isGoogleNewsArticleUrl(c.source_url)) {
+      out.push(c);
+      continue;
+    }
+    const next = resolved.get(c.source_url) ?? c.source_url;
+    if (isGoogleNewsArticleUrl(next)) {
+      console.warn("[discovery-shortlist] Dropping unresolved Google News URL:", c.source_url.slice(0, 80));
+      continue;
+    }
+    out.push({ ...c, source_url: next });
+  }
+  return out;
 }
 
 function toOutputItems(candidates: DiscoveryCandidate[]): TitleDiscoveryOutputItem[] {
@@ -403,12 +426,21 @@ export async function generateDiscoveryTitles(
     };
   }
 
+  const withPublisherUrls = await ensurePublisherUrls(filtered);
+  if (withPublisherUrls.length === 0) {
+    return {
+      results: [],
+      provider,
+      error: "Shortlist URLs could not be resolved to publisher links (Google News redirects failed).",
+    };
+  }
+
   if (openaiQuotaHit && provider === "claude") {
     warning = "OpenAI quota exceeded — shortlist used Claude (Anthropic).";
   }
 
   return {
-    results: toOutputItems(filtered),
+    results: toOutputItems(withPublisherUrls),
     provider,
     ...(warning ? { warning } : {}),
   };

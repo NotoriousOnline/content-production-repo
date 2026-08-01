@@ -1257,14 +1257,15 @@ async function updatePostRankMathViaWeedComTools(
 async function updatePostRankMathViaBulk(
   site: WPSite,
   postId: number,
-  meta: Record<string, string>
+  meta: Record<string, string>,
+  objectType = "post"
 ): Promise<{ ok: boolean; detail?: string }> {
   const base = site.url.replace(/\/$/, "");
   const res = await wpFetch(wpRestUrl(base, "rankmath/v1/updateMetaBulk"), {
     method: "POST",
     headers: wpRestHeaders(site, { contentTypeJson: true }),
     body: JSON.stringify({
-      rows: [{ objectType: "post", objectID: postId, meta }],
+      rows: [{ objectType, objectID: postId, meta }],
     }),
   });
   const text = await res.text();
@@ -1275,14 +1276,15 @@ async function updatePostRankMathViaBulk(
 async function updatePostRankMathViaRankMathApi(
   site: WPSite,
   postId: number,
-  meta: Record<string, string>
+  meta: Record<string, string>,
+  objectType = "post"
 ): Promise<{ ok: boolean; detail?: string }> {
   const base = site.url.replace(/\/$/, "");
   const res = await wpFetch(wpRestUrl(base, "rankmath/v1/updateMeta"), {
     method: "POST",
     headers: wpRestHeaders(site, { contentTypeJson: true }),
     body: JSON.stringify({
-      objectType: "post",
+      objectType,
       objectID: postId,
       meta,
     }),
@@ -1307,11 +1309,24 @@ export async function updatePostRankMathMeta(
   const meta = buildRankMathMetaPayload(fields);
   if (Object.keys(meta).length === 0) return true;
 
+  const objectTypes =
+    collection && collection !== "posts"
+      ? [collection, "post"]
+      : ["post"];
+
   const strategies: Array<{ name: string; run: () => Promise<{ ok: boolean; detail?: string }> }> = [
     { name: "weed-com-tools/v1/rank-math", run: () => updatePostRankMathViaWeedComTools(site, postId, meta) },
-    { name: "rankmath/v1/updateMetaBulk", run: () => updatePostRankMathViaBulk(site, postId, meta) },
-    { name: "rankmath/v1/updateMeta", run: () => updatePostRankMathViaRankMathApi(site, postId, meta) },
   ];
+  for (const objectType of objectTypes) {
+    strategies.push({
+      name: `rankmath/v1/updateMetaBulk (${objectType})`,
+      run: () => updatePostRankMathViaBulk(site, postId, meta, objectType),
+    });
+    strategies.push({
+      name: `rankmath/v1/updateMeta (${objectType})`,
+      run: () => updatePostRankMathViaRankMathApi(site, postId, meta, objectType),
+    });
+  }
 
   for (const strategy of strategies) {
     const result = await strategy.run();

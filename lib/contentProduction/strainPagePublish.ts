@@ -13,6 +13,7 @@ import {
   type StrainPageCustomFields,
 } from "@/lib/contentProduction/strainPage";
 import {
+  dedupeStrainPageInternalLinks,
   ensureStrainPageInternalLinks,
   gatherVerifiedStrainPageLinks,
   sanitizeStrainPageLinks,
@@ -75,6 +76,7 @@ export async function postStrainPagePublish(request: Request) {
       content = sanitizeStrainPageLinks(content, verified.allowlist, siteOrigin);
       content = ensureStrainPageSeedsSection(content, name, siteOrigin);
       content = ensureStrainPageClonesSection(content, name, siteOrigin);
+      content = dedupeStrainPageInternalLinks(content, siteOrigin);
 
       if (!customFields && verified.links.length > 0) {
         customFields = normalizeStrainPageCustomFields({});
@@ -83,12 +85,12 @@ export async function postStrainPagePublish(request: Request) {
   }
 
   const seoName = name || "Strain";
-  const rankMathResolved = rankMath ?? {
-    focuskw: strainPageFocusKeyword(seoName),
-    seoTitle: strainPageMetaTitle(seoName),
-    metadesc: customFields
-      ? strainPageMetaDescription(seoName, customFields)
-      : undefined,
+  const rankMathResolved = {
+    focuskw: rankMath?.focuskw?.trim() || strainPageFocusKeyword(seoName),
+    seoTitle: rankMath?.seoTitle?.trim() || strainPageMetaTitle(seoName),
+    metadesc:
+      rankMath?.metadesc?.trim() ||
+      (customFields ? strainPageMetaDescription(seoName, customFields) : undefined),
   };
 
   const wrapped = new Request(request.url, {

@@ -149,7 +149,21 @@ export async function postStrainPagePublishCore(request: Request) {
       .sort((a, b) => a.index - b.index);
 
     let featuredMediaId: number | undefined;
-    const focuskw = rankMathOverrides?.focuskw?.trim() ?? "";
+    const focuskw =
+      rankMathOverrides?.focuskw?.trim() ||
+      (typeof title === "string" ? title.trim().slice(0, 191) : "");
+    const metadesc = rankMathOverrides?.metadesc?.trim() ?? "";
+    const seoTitle = rankMathOverrides?.seoTitle?.trim() || title.slice(0, 200);
+
+    const rankMathMeta: Record<string, string> = {};
+    if (focuskw) rankMathMeta.rank_math_focus_keyword = focuskw.slice(0, 191);
+    if (metadesc) rankMathMeta.rank_math_description = metadesc.slice(0, 320);
+    if (seoTitle) rankMathMeta.rank_math_title = seoTitle.slice(0, 200);
+
+    const mergedMeta = {
+      ...(customFieldsMeta ?? {}),
+      ...rankMathMeta,
+    };
 
     if (featuredImg) {
       if (isPreUploaded(featuredImg)) {
@@ -206,7 +220,7 @@ export async function postStrainPagePublishCore(request: Request) {
 
     const publishOpts = {
       slug: postSlug,
-      meta: customFieldsMeta,
+      meta: Object.keys(mergedMeta).length > 0 ? mergedMeta : undefined,
       restCollection:
         typeof body.restCollection === "string" && body.restCollection.trim()
           ? body.restCollection.trim()
@@ -224,9 +238,6 @@ export async function postStrainPagePublishCore(request: Request) {
     if (featuredMediaId != null && featuredMediaId > 0) {
       await setPostFeaturedMedia(site, postId, featuredMediaId, restCollection);
     }
-
-    const metadesc = rankMathOverrides?.metadesc?.trim() ?? "";
-    const seoTitle = rankMathOverrides?.seoTitle?.trim() || title.slice(0, 200);
 
     const rankMathOk = await updatePostRankMathMeta(
       site,
