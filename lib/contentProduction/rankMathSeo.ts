@@ -1,4 +1,5 @@
 import { callClaude } from "@/lib/anthropic";
+import { sanitizeContentDashes } from "@/lib/contentProduction/typographySanitize";
 
 /** Rank Math focus keyword from post title (Weed.com convention). */
 export function rankMathFocusKeywordFromTitle(postTitle: string): string {
@@ -7,7 +8,7 @@ export function rankMathFocusKeywordFromTitle(postTitle: string): string {
 }
 
 export function buildMetaDescriptionFromPlainText(text: string, maxLen = 156): string {
-  const plain = text.replace(/\s+/g, " ").trim();
+  const plain = sanitizeContentDashes(text.replace(/\s+/g, " ").trim());
   if (plain.length <= maxLen) return plain;
   const cut = plain.slice(0, maxLen - 3);
   const lastSpace = cut.lastIndexOf(" ");
@@ -51,7 +52,7 @@ export async function proposeRankMathSeoForWeedPost(input: {
   const system = `You write Rank Math SEO snippets for Weed.com (cannabis education, strains, products).
 Return ONLY valid JSON: {"metaDescription":"..."}
 Rules:
-- metaDescription: 140-156 characters, compelling SERP snippet, informational tone, adults 21+, no medical claims, no em dash (U+2014)
+- metaDescription: 140-156 characters, compelling SERP snippet, informational tone, adults 21+, no medical claims, no em dash (U+2014), no spaced hyphen " - " pauses
 - Do not include focusKeyword in JSON (caller sets it from the post title)`;
 
   const user = `Post title: ${input.title}
@@ -63,10 +64,11 @@ ${context || "(no body text — use title only)"}`;
   try {
     const raw = await callClaude(system, user, { maxTokens: 512 });
     const parsed = extractJson(raw) as { metaDescription?: string };
-    const metaDescription =
+    const metaDescription = sanitizeContentDashes(
       typeof parsed.metaDescription === "string" && parsed.metaDescription.trim().length > 20
         ? parsed.metaDescription.trim().slice(0, 320)
-        : fallback;
+        : fallback
+    );
     return { focusKeyword, metaDescription };
   } catch {
     return { focusKeyword, metaDescription: fallback };

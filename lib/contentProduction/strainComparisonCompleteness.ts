@@ -11,6 +11,7 @@ import {
 } from "@/lib/contentProduction/strainComparison";
 import { countCompleteWeedFaqPairs, extractWeedFaqSection } from "@/lib/contentProduction/weedLearnCompleteness";
 import { countAllowlistedLinks } from "@/lib/contentProduction/strainComparisonLinks";
+import { sanitizeContentDashes } from "@/lib/contentProduction/typographySanitize";
 
 export const STRAIN_COMPARISON_MIN_INTERNAL_LINKS = 3;
 
@@ -141,7 +142,7 @@ export async function ensureStrainComparisonComplete(
   siteOrigin = "",
   outline?: StrainComparisonOutline | null
 ): Promise<string> {
-  let current = html.replace(/\u2014/g, " - ");
+  let current = sanitizeContentDashes(html);
   for (let pass = 0; pass < 2; pass++) {
     const audit = auditStrainComparisonHtml(current, strainA, strainB, allowlist, siteOrigin, outline);
     if (!audit.needsRepair) return current;

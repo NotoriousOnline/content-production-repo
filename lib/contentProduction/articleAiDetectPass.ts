@@ -9,13 +9,16 @@ import {
   enforceHumanisationInCode,
   type DetectLoopResult,
 } from "@/lib/contentProduction/humanisationGuards";
+import { sanitizeContentDashes } from "@/lib/contentProduction/typographySanitize";
 import type { EdenWinstonOutput } from "@/lib/winstonAiClient";
 
 function stripModelFences(raw: string): string {
-  return raw
-    .replace(/^```(?:html|markdown|md)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
+  return sanitizeContentDashes(
+    raw
+      .replace(/^```(?:html|markdown|md)?\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim()
+  );
 }
 
 function looksLikeHtml(article: string): boolean {
@@ -26,7 +29,7 @@ const FLAGGED_VOICE_PASS_SYSTEM = `You are editing an existing article to reduce
 
 Rewrite ONLY the flagged passages harder: shorter uneven paragraphs, kill filler/cliches, vary sentence length.
 Preserve every number, name, date, URL, claim, inline style, class, and HTML structure elsewhere.
-Do not invent facts. Do not add or remove sections. Do not use em dashes (U+2014); use " - " instead.
+Do not invent facts. Do not add or remove sections. Never use em dashes (U+2014) or a spaced hyphen " - " as a pause; use commas, semicolons, or parentheses instead.
 Output the complete revised article only (raw HTML or markdown matching the input format). No code fences.`;
 
 const HUMANIZATION_REVIEW_SYSTEM = `You are a senior editorial humanizer doing a REVIEW HUMANIZATION PASS on an article that failed an AI-detection threshold.
@@ -38,7 +41,7 @@ Hard rules:
 - Preserve document structure: same headings, sections, lists, FAQ items, tables, and (for HTML) tags/classes/inline styles.
 - Do not add or remove sections, links, images, Expert Insight boxes, Sources, or legal footers.
 - Do not invent facts, studies, or quotes.
-- Never use em dashes (U+2014). Use a spaced hyphen " - " instead.
+- Never use em dashes (U+2014) or a spaced hyphen " - " as a pause. Use commas, semicolons, or parentheses instead.
 
 Rewrite the prose so it sounds like a real editor, not a model:
 - Uneven paragraph lengths; some short punches; avoid 3+ medium-length sentences in a row.

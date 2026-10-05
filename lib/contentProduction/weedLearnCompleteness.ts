@@ -1,5 +1,6 @@
 import { callClaude } from "@/lib/anthropic";
 import { errorMessage } from "@/lib/serverLog";
+import { sanitizeContentDashes } from "@/lib/contentProduction/typographySanitize";
 
 export type WeedLearnAudit = {
   needsRepair: boolean;
@@ -93,6 +94,17 @@ function hasBibleLegalFooter(html: string): boolean {
   );
 }
 
+/** Bible legal footer (Layer 1) — appended when the model omits it. */
+export const WEED_LEARN_LEGAL_FOOTER_HTML = `<div style="margin:2rem 0 0;padding:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:0.9375rem;line-height:1.55;color:#64748b;">
+<p style="margin:0;">For adults 21+ only. Cannabis laws vary by state. If you are experiencing a medical emergency, call 911 or go to your nearest emergency room.</p>
+</div>`;
+
+/** Ensure the hard-required legal footer is present (deterministic; no model call). */
+export function ensureWeedLegalFooter(html: string): string {
+  if (hasBibleLegalFooter(html)) return html;
+  return `${html.trimEnd()}\n\n${WEED_LEARN_LEGAL_FOOTER_HTML}`;
+}
+
 export function auditWeedLearnHtml(
   html: string,
   expectedFaqCount: number,
@@ -130,7 +142,8 @@ export function auditWeedLearnHtml(
   };
 }
 
-const WEED_LEARN_APPEND_SYSTEM = `You complete truncated Weed.com Learn blog HTML. Output raw HTML only (no markdown fences, no em dash U+2014).
+const WEED_LEARN_APPEND_SYSTEM = `You complete truncated Weed.com Learn blog HTML. Output raw HTML only (no markdown fences, no em dash U+2014, no spaced hyphen " - " pauses).
+Use commas, semicolons, or parentheses instead of dash pauses.
 
 The user message has TITLE, KEYWORDS, FAQ COUNT, and the TAIL of an article that stopped early or has an incomplete FAQ.
 
@@ -139,7 +152,8 @@ Output ONLY the continuation to append (do not repeat earlier paragraphs):
 2) If the FAQ block is missing or incomplete, output the full FAQ block (Bible outer div with Inter; <h2>Frequently asked questions</h2>; each Q as <h3> or Bible question div + answer <p> or answer div). Include EXACTLY the FAQ count specified — every question MUST have a complete answer (~24-45 words). Never leave a question without an answer.
 3) Then amber drug-interaction disclaimer if relevant + legal footer only. Do NOT add a Sources HTML block (server appends Sources). Never stop mid-FAQ.`;
 
-const WEED_LEARN_FULL_REPAIR_SYSTEM = `You repair incomplete Weed.com Learn article HTML. Output the COMPLETE article body fragment as raw HTML only (no markdown fences, no em dash U+2014).
+const WEED_LEARN_FULL_REPAIR_SYSTEM = `You repair incomplete Weed.com Learn article HTML. Output the COMPLETE article body fragment as raw HTML only (no markdown fences, no em dash U+2014, no spaced hyphen " - " pauses).
+Use commas, semicolons, or parentheses instead of dash pauses.
 
 Fix every issue listed in the user message while preserving valid Expert Insight boxes (.expert-box), internal links, and main body sections unless they must expand to meet word count.
 
@@ -161,7 +175,7 @@ function stripHtmlCodeFences(text: string): string {
 }
 
 function replaceEmDashes(html: string): string {
-  return html.replace(/\u2014/g, " - ").replace(/\u2013/g, "-");
+  return sanitizeContentDashes(html);
 }
 
 async function appendWeedLearnContinuation(

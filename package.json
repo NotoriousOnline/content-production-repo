@@ -3,15 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "dev:fresh": "npm run clean && next dev",
-    "dev:turbo": "next dev --turbo",
-    "build": "next build",
+    "dev": "node --use-system-ca ./node_modules/next/dist/bin/next dev",
+    "dev:fresh": "npm run clean && npm run dev",
+    "dev:turbo": "node --use-system-ca ./node_modules/next/dist/bin/next dev --turbo",
+    "build": "node --use-system-ca ./node_modules/next/dist/bin/next build",
     "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
-    "rebuild": "npm run clean && next build",
-    "start": "next start",
+    "rebuild": "npm run clean && npm run build",
+    "start": "node --use-system-ca ./node_modules/next/dist/bin/next start",
     "lint": "next lint",
-    "sync:greenorg-categories": "node scripts/sync-greenorg-wp-categories.mjs"
+    "sync:greenorg-categories": "node --use-system-ca scripts/sync-greenorg-wp-categories.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

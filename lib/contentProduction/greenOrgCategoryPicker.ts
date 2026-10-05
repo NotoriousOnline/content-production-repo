@@ -17,6 +17,19 @@ export function isGreenOrgSite(site: WPSite): boolean {
   }
 }
 
+/** True when this site is garden.com (content-production publishing). */
+export function isGardenSite(site: WPSite): boolean {
+  const raw = (site.url ?? "").trim();
+  if (!raw) return false;
+  try {
+    const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    const host = u.hostname.toLowerCase();
+    return host === "garden.com" || host.endsWith(".garden.com");
+  } catch {
+    return /garden\.com/i.test(raw);
+  }
+}
+
 /** True when this site is the prefab site (content-production publishing). */
 export function isPrefabSite(site: WPSite): boolean {
   const raw = (site.url ?? "").trim();
@@ -147,8 +160,11 @@ export async function pickGreenOrgCategoryIds(args: {
   keywords: unknown;
   articleHtml: string;
   categories: WPCategoryRow[];
+  /** Shown in the picker prompt. Defaults to Green.org. */
+  siteLabel?: string;
 }): Promise<number[]> {
   const { title, keywords, articleHtml, categories } = args;
+  const siteLabel = args.siteLabel?.trim() || "Green.org";
   const allowed = new Set(categories.map((c) => c.id));
   if (allowed.size === 0) return [];
 
@@ -156,7 +172,7 @@ export async function pickGreenOrgCategoryIds(args: {
     .map((c) => `- id=${c.id} name="${c.name.replace(/"/g, '\\"')}" slug=${c.slug} parent=${c.parent}`)
     .join("\n");
 
-  const user = `You assign Green.org WordPress categories for a new article draft.
+  const user = `You assign ${siteLabel} WordPress categories for a new article draft.
 
 Post title: ${title.trim()}
 

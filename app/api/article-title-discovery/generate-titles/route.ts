@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { generateDiscoveryTitles } from "@/lib/articleDiscoveryGenerateTitles";
 
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 export async function POST(request: Request) {
   let body: {

@@ -2,6 +2,6 @@ export const config = {
   slug: "article-title-discovery",
   name: "Article Title Discovery",
   description:
-    "Morning shortlist from six Green.org sources (ENN, Bloomberg Green, Reuters Environment, Carbon Brief, Canary Media, Guardian Environment). Filters by Energy/Tech/Climate/Transportation and a 24-hour publish window — you pick the final two.",
+    "Morning shortlist from six Green.org sources. Mixes 24h news with 2–3 week articles that already have Ahrefs organic traffic. Slack checklist ticks are shared live across the channel.",
   icon: "Newspaper",
 };

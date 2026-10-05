@@ -221,6 +221,29 @@ function replaceIntro(html: string, newIntro: string): string {
   return newIntro + html.slice(m[1].length);
 }
 
+function collectLinkedUrls(html: string, siteOrigin: string): Set<string> {
+  const seen = new Set<string>();
+  const hrefRe = /\bhref\s*=\s*["']([^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = hrefRe.exec(html)) !== null) {
+    seen.add(normalizeLinkUrl(m[1], siteOrigin));
+  }
+  return seen;
+}
+
+/** Keep the first <a> for each URL; unwrap later duplicates to plain text. */
+export function dedupeStrainPageInternalLinks(html: string, siteOrigin: string): string {
+  const seen = new Set<string>();
+  return html.replace(/<a\b([^>]*?)>([\s\S]*?)<\/a>/gi, (full, attrs: string, inner: string) => {
+    const hrefMatch = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i);
+    if (!hrefMatch) return inner;
+    const norm = normalizeLinkUrl(hrefMatch[1], siteOrigin);
+    if (seen.has(norm)) return inner;
+    seen.add(norm);
+    return full;
+  });
+}
+
 export function countAllowlistedStrainPageLinks(
   html: string,
   allowlist: string[],
@@ -246,6 +269,12 @@ export function ensureStrainPageInternalLinks(
 ): string {
   if (links.length === 0) return html;
   let result = html;
+  const used = collectLinkedUrls(result, siteOrigin);
+
+  const markUsed = (url: string) => {
+    used.add(normalizeLinkUrl(url, siteOrigin));
+  };
+  const isUsed = (url: string) => used.has(normalizeLinkUrl(url, siteOrigin));
 
   const strainsHub = links.find((l) => l.kind === "hub" && /\/strains\/?$/i.test(l.url));
   const seedsHub = links.find((l) => l.kind === "shop" && /\/seeds\/?$/i.test(l.url));
@@ -255,38 +284,59 @@ export function ensureStrainPageInternalLinks(
   const related = links.filter((l) => l.kind === "related");
 
   const introMatch = result.match(/^([\s\S]*?)(?=<h2\b)/i);
-  if (introMatch && strainsHub && !sectionHasLinkTo(introMatch[1], strainsHub.url, siteOrigin)) {
+  if (
+    introMatch &&
+    strainsHub &&
+    !isUsed(strainsHub.url) &&
+    !sectionHasLinkTo(introMatch[1], strainsHub.url, siteOrigin)
+  ) {
     const suffix = `Browse more profiles on our <a href="${strainsHub.url}">cannabis strains</a> hub.`;
     result = replaceIntro(result, appendToFirstParagraph(introMatch[1], suffix));
+    markUsed(strainsHub.url);
   }
 
   const effectsH2 = /<h2[^>]*>\s*Effects\s*<\/h2>/i;
   const effectsSection = sectionAfterH2(result, effectsH2);
-  if (effectsSection && productShop && !sectionHasLinkTo(effectsSection, productShop.url, siteOrigin)) {
+  if (
+    effectsSection &&
+    productShop &&
+    !isUsed(productShop.url) &&
+    !sectionHasLinkTo(effectsSection, productShop.url, siteOrigin)
+  ) {
     const anchor = /flower/i.test(productShop.url) ? "flower and prerolls" : "vapes and carts";
     const suffix = `Shop <a href="${productShop.url}">${anchor}</a> at Weed.com.`;
     result = replaceSectionAfterH2(result, effectsH2, appendToFirstParagraph(effectsSection, suffix));
+    markUsed(productShop.url);
   }
 
   const name = formatStrainDisplayName(strainName);
   const seedsH2 = new RegExp(`<h2[^>]*>\\s*Buy\\s+${escapeRegex(name)}\\s+Seeds\\s*</h2>`, "i");
   const seedsSection = sectionAfterH2(result, seedsH2);
-  if (seedsSection && seedsHub && !sectionHasLinkTo(seedsSection, seedsHub.url, siteOrigin)) {
+  if (
+    seedsSection &&
+    seedsHub &&
+    !isUsed(seedsHub.url) &&
+    !sectionHasLinkTo(seedsSection, seedsHub.url, siteOrigin)
+  ) {
     const suffix = `<a href="${seedsHub.url}">Buy cannabis seeds</a> at Weed.com.`;
     result = replaceSectionAfterH2(result, seedsH2, appendToFirstParagraph(seedsSection, suffix));
+    markUsed(seedsHub.url);
   }
 
   if (related.length > 0) {
     const terpeneH2 = /<h2[^>]*>\s*Terpenes\s*<\/h2>/i;
     const terpeneSection = sectionAfterH2(result, terpeneH2);
     if (terpeneSection) {
-      const missing = related.filter((l) => !sectionHasLinkTo(terpeneSection, l.url, siteOrigin));
+      const missing = related.filter(
+        (l) => !isUsed(l.url) && !sectionHasLinkTo(terpeneSection, l.url, siteOrigin)
+      );
       if (missing.length > 0) {
         const linkPhrase = missing
           .map((l) => `<a href="${l.url}">${stripStrainWordSuffix(l.label)}</a>`)
           .join(" and ");
         const suffix = `Fans of this profile often explore ${linkPhrase}.`;
         result = replaceSectionAfterH2(result, terpeneH2, appendToFirstParagraph(terpeneSection, suffix));
+        for (const l of missing) markUsed(l.url);
       }
     }
   }

@@ -41,7 +41,7 @@ export async function serverLog(input: {
       console.error("[serverLog] Supabase insert failed:", error.message, input.source);
     }
   } catch (e) {
-    console.error("[serverLog] skipped (Supabase unavailable or misconfigured):", e);
+    console.error("[serverLog] skipped (Supabase unavailable or misconfigured):", errorMessage(e));
   }
 }
 
@@ -49,16 +49,42 @@ export async function serverLog(input: {
  * Human-readable error text for logging and API JSON responses.
  * SDKs often throw plain objects (not Error), which would otherwise become "[object Object]".
  */
+function networkHintFromCause(err: unknown): string | null {
+  const walk = (e: unknown, depth: number): string | null => {
+    if (depth > 4 || e == null) return null;
+    if (typeof e === "object") {
+      const o = e as Record<string, unknown>;
+      const code = typeof o.code === "string" ? o.code : "";
+      const hostname = typeof o.hostname === "string" ? o.hostname : "";
+      if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+        return hostname
+          ? `DNS lookup failed for ${hostname}. Check your network DNS (router DNS may be down; try 8.8.8.8 or 1.1.1.1).`
+          : "DNS lookup failed. Check your network DNS (router DNS may be down; try 8.8.8.8 or 1.1.1.1).";
+      }
+      if (code === "ETIMEDOUT" || code === "ECONNRESET" || code === "ECONNREFUSED") {
+        return `Network error (${code}${hostname ? ` contacting ${hostname}` : ""}). Check your internet connection and retry.`;
+      }
+      if ("cause" in o) return walk(o.cause, depth + 1);
+    }
+    return null;
+  };
+  return walk(err, 0);
+}
+
 export function errorMessage(err: unknown): string {
   if (err == null) return "Unknown error";
   if (typeof err === "string") return err;
   if (err instanceof Error) {
+    const hint = networkHintFromCause(err);
+    if (hint && (/^fetch failed$/i.test(err.message) || /getaddrinfo|ENOTFOUND|EAI_AGAIN/i.test(err.message))) {
+      return hint;
+    }
     const base = err.message?.trim() || err.name || "Error";
     if (err.cause !== undefined) {
       const c = errorMessage(err.cause);
       if (c && c !== "Unknown error") return `${base} (${c})`;
     }
-    return base;
+    return hint && base === "fetch failed" ? hint : base;
   }
   if (typeof err === "object") {
     const o = err as Record<string, unknown>;

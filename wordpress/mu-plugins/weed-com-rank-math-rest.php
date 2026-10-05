@@ -16,20 +16,25 @@ add_action('rest_api_init', function () {
 		'rank_math_focus_keyword',
 	);
 
-	foreach ($keys as $key) {
-		register_post_meta(
-			'post',
-			$key,
-			array(
-				'show_in_rest'  => true,
-				'single'        => true,
-				'type'          => 'string',
-				'auth_callback' => function () {
-					return current_user_can('edit_posts');
-				},
-				'sanitize_callback' => 'sanitize_text_field',
-			)
-		);
+	// Empty post type = all types (strain CPT + posts/pages).
+	$post_types = array('', 'post', 'page', 'strains', 'strain');
+
+	foreach ($post_types as $post_type) {
+		foreach ($keys as $key) {
+			register_post_meta(
+				$post_type,
+				$key,
+				array(
+					'show_in_rest'  => true,
+					'single'        => true,
+					'type'          => 'string',
+					'auth_callback' => function () {
+						return current_user_can('edit_posts');
+					},
+					'sanitize_callback' => 'sanitize_text_field',
+				)
+			);
+		}
 	}
 
 	register_rest_route(

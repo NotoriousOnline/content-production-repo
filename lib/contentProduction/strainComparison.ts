@@ -318,7 +318,7 @@ export function strainComparisonSystemPrompt(): string {
   return `You write Weed.com strain comparison articles for /learn/[strain-a]-vs-[strain-b]/ URLs.
 
 OUTPUT: Raw HTML only. No markdown fences. No <!DOCTYPE>, <html>, or <h1> (CMS sets title separately).
-Typography: Never use the em dash (U+2014). Use " - " or commas instead.
+Typography: Never use the em dash (U+2014) or a spaced hyphen " - " as a pause. Use commas, semicolons, or parentheses instead.
 Font: Inter, system-ui, sans-serif on all text blocks via inline style where you open text tags.
 
 TARGET LENGTH: ${STRAIN_COMPARISON_WORD_MIN}–${STRAIN_COMPARISON_WORD_MAX} words (aim ~${STRAIN_COMPARISON_WORD_TARGET}).

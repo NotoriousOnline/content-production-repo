@@ -27,7 +27,37 @@ type ImageItem = {
   sectionHeading?: string;
 };
 
-type InternalLink = { title: string; url: string };
+type AhrefsTerm = { keyword?: string; volume?: number | null };
+
+function formatAhrefsExtractInfo(ah: {
+  enabled?: boolean;
+  mergedCount?: number;
+  error?: string | null;
+  country?: string | null;
+  seed?: string | null;
+  terms?: AhrefsTerm[];
+}): string | null {
+  if (!ah.enabled) {
+    return "Optional: set AHREFS_API_KEY in .env.local to prepend volume-sorted matching terms from Ahrefs.";
+  }
+  const country = String(ah.country ?? "us").toUpperCase();
+  const terms = Array.isArray(ah.terms) ? ah.terms : [];
+  const top = terms
+    .filter((t): t is { keyword: string; volume: number | null } => typeof t?.keyword === "string" && t.keyword.trim().length > 0)
+    .slice(0, 6)
+    .map((t) =>
+      typeof t.volume === "number" ? `${t.keyword} (${t.volume.toLocaleString("en-US")}/mo)` : t.keyword
+    );
+  if (top.length > 0) {
+    const seed = ah.seed ? ` Seed: “${ah.seed}”.` : "";
+    return `Ahrefs ${country} high-volume terms:${seed} ${top.join("; ")}.`;
+  }
+  if (ah.error && /401|403|rejected|rate limit|not set|Missing API/i.test(ah.error)) {
+    return `Ahrefs unavailable (${ah.error}). Keywords use Claude only.`;
+  }
+  const seed = ah.seed ? ` Tried seed “${ah.seed}”.` : "";
+  return `Ahrefs found no high-volume keywords for this headline.${seed} Using Claude suggestions. Add a shorter target keyword for better matches.`;
+}
 
 type Site = {
   id: string;
@@ -133,8 +163,10 @@ export function ContentProductionTool({
     site: { name: string; url: string };
     rankMath?: { focusKeyphrase?: string; metaDescriptionSet?: boolean };
     yoast?: { focusKeyphrase?: string; metaDescriptionSet?: boolean };
+    categoryNames?: string[];
     /** True when the last operation was an update to an existing draft, not a new post. */
     updated?: boolean;
+    slack?: { sent: boolean; error?: string };
   } | null>(null);
   const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
   const [regeneratePanelIndex, setRegeneratePanelIndex] = useState<number | null>(null);
@@ -360,7 +392,7 @@ export function ContentProductionTool({
       fetch(`${api}/extract-keywords`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: title.trim() }),
+        body: JSON.stringify({ title: title.trim(), keywords }),
       });
 
     try {
@@ -374,7 +406,16 @@ export function ContentProductionTool({
       let data: {
         error?: string;
         keywords?: unknown;
-        sources?: { ahrefs?: { enabled?: boolean; mergedCount?: number; error?: string | null; country?: string | null } };
+        sources?: {
+          ahrefs?: {
+            enabled?: boolean;
+            mergedCount?: number;
+            error?: string | null;
+            country?: string | null;
+            seed?: string | null;
+            terms?: AhrefsTerm[];
+          };
+        };
       };
       try {
         data = rawText ? JSON.parse(rawText) : {};
@@ -394,16 +435,8 @@ export function ContentProductionTool({
 
       const list = Array.isArray(data.keywords) ? data.keywords : [];
       const ah = data.sources?.ahrefs;
-      if (ah?.enabled && (ah.mergedCount ?? 0) > 0) {
-        setKeywordExtractInfo(
-          `Ahrefs: merged ${ah.mergedCount} matching term(s) by volume (${String(ah.country ?? "us").toUpperCase()}).`
-        );
-      } else if (ah?.enabled && ah.error) {
-        setKeywordExtractInfo(`Ahrefs unavailable (${ah.error}). Keywords use Claude only.`);
-      } else if (ah?.enabled && (ah.mergedCount ?? 0) === 0) {
-        setKeywordExtractInfo("Ahrefs returned no matching terms for this title; list is Claude-only.");
-      } else if (!ah?.enabled) {
-        setKeywordExtractInfo("Optional: set AHREFS_API_KEY in .env.local to prepend volume-sorted matching terms from Ahrefs.");
+      if (ah) {
+        setKeywordExtractInfo(formatAhrefsExtractInfo(ah));
       }
 
       setKeywords((prev) => {
@@ -583,6 +616,17 @@ export function ContentProductionTool({
         }
 
         setPublishError(null);
+        const slackRaw = data.slack;
+        const slack =
+          slackRaw != null && typeof slackRaw === "object"
+            ? {
+                sent: (slackRaw as { sent?: unknown }).sent === true,
+                error:
+                  typeof (slackRaw as { error?: unknown }).error === "string"
+                    ? (slackRaw as { error: string }).error
+                    : undefined,
+              }
+            : undefined;
         setPublishResult({
           postId: data.postId as number | string,
           postUrl: data.postUrl as string,
@@ -590,7 +634,11 @@ export function ContentProductionTool({
           site: (data.site as { name: string; url: string }) ?? { name: selectedSite.name, url: selectedSite.url },
           rankMath: data.rankMath as { focusKeyphrase?: string; metaDescriptionSet?: boolean } | undefined,
           yoast: data.yoast as { focusKeyphrase?: string; metaDescriptionSet?: boolean } | undefined,
+          categoryNames: Array.isArray(data.categoryNames)
+            ? (data.categoryNames as unknown[]).map((name) => String(name).trim()).filter(Boolean)
+            : undefined,
           updated: data.updated === true,
+          ...(slack ? { slack } : {}),
         });
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
@@ -672,8 +720,19 @@ export function ContentProductionTool({
       const contentData = (await contentRes.json()) as {
         content?: string;
         error?: string;
+        keywords?: unknown;
         internalLinksUsed?: InternalLink[];
         codeGuards?: unknown;
+        sources?: {
+          ahrefs?: {
+            enabled?: boolean;
+            mergedCount?: number;
+            error?: string | null;
+            country?: string | null;
+            seed?: string | null;
+            terms?: AhrefsTerm[];
+          };
+        };
       };
 
       if (!contentRes.ok) {
@@ -690,6 +749,17 @@ export function ContentProductionTool({
         return;
       }
 
+      const usedKeywords = Array.isArray(contentData.keywords)
+        ? contentData.keywords.filter((k): k is string => typeof k === "string" && k.trim().length > 0)
+        : keywords;
+      if (usedKeywords.length > 0) {
+        setKeywords(usedKeywords);
+      }
+      const generatedAh = contentData.sources?.ahrefs;
+      if (generatedAh?.enabled && (generatedAh.mergedCount ?? 0) > 0) {
+        setKeywordExtractInfo(formatAhrefsExtractInfo(generatedAh));
+      }
+
       setContentLoading(false);
       setGeneratedContent(contentData.content);
       setAiDetection(detectInfoFromCodeGuards(contentData.codeGuards));
@@ -703,7 +773,7 @@ export function ContentProductionTool({
         body: JSON.stringify({
           siteId: selectedSite.id,
           title: title.trim(),
-          keywords,
+          keywords: usedKeywords.length > 0 ? usedKeywords : keywords,
           content: contentData.content,
           wordCount,
         }),
@@ -1406,7 +1476,8 @@ export function ContentProductionTool({
                   </div>
                   <p className="mb-2 text-xs text-slate-500">
                     Primary phrases for SEO and internal link matching; separate multiple with commas. Extract from title
-                    merges suggestions into this field.
+                    pulls Ahrefs high-volume matching terms (US search volume) and merges them here. Generate Content also
+                    weaves those phrases into the article.
                   </p>
                   {keywordExtractError && (
                     <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
@@ -1466,9 +1537,9 @@ export function ContentProductionTool({
                   </button>
                 </div>
                 <p className="mb-2 text-xs text-slate-500">
-                  Claude proposes phrases (including 1–2 WordPress-focused terms). If{" "}
-                  <span className="font-mono text-[11px]">AHREFS_API_KEY</span> is set server-side, Ahrefs matching
-                  terms (sorted by estimated monthly volume) are merged first. Consumes Ahrefs API units.
+                  Claude proposes complementary phrases. Ahrefs matching terms (highest US monthly volume first) are
+                  merged in when <span className="font-mono text-[11px]">AHREFS_API_KEY</span> is set. Generate Content
+                  also injects those high-volume phrases into the article. Consumes Ahrefs API units.
                 </p>
                 {keywordExtractError && (
                   <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
@@ -1685,7 +1756,7 @@ export function ContentProductionTool({
               )}
               {contentApproved ? (
                 <div
-                  className={`space-y-4 text-sm [&_h1]:text-xl [&_h1]:font-bold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:text-base [&_h3]:font-medium [&_p]:leading-relaxed ${
+                  className={`space-y-4 text-sm [&_h1]:text-xl [&_h1]:font-bold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:text-base [&_h3]:font-medium [&_p]:leading-relaxed [&_ul]:my-3 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1 [&_table]:my-4 [&_table]:w-full [&_table]:border-collapse [&_table]:text-left [&_th]:border-b [&_th]:border-slate-300 [&_th]:px-2 [&_th]:py-1.5 [&_th]:font-semibold [&_td]:border-b [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1.5 [&_a]:text-teal-700 [&_a]:underline ${
                     contentRefining ? "pointer-events-none opacity-60" : ""
                   }`}
                   dangerouslySetInnerHTML={{ __html: approvedContent ?? "" }}
@@ -1696,7 +1767,7 @@ export function ContentProductionTool({
                   contentEditable={!contentRefining}
                   suppressContentEditableWarning
                   onInput={handleContentInput}
-                  className={`min-h-[200px] space-y-4 text-sm outline-none [&_h1]:text-xl [&_h1]:font-bold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:text-base [&_h3]:font-medium [&_p]:leading-relaxed ${
+                  className={`min-h-[200px] space-y-4 text-sm outline-none [&_h1]:text-xl [&_h1]:font-bold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:text-base [&_h3]:font-medium [&_p]:leading-relaxed [&_ul]:my-3 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1 [&_table]:my-4 [&_table]:w-full [&_table]:border-collapse [&_table]:text-left [&_th]:border-b [&_th]:border-slate-300 [&_th]:px-2 [&_th]:py-1.5 [&_th]:font-semibold [&_td]:border-b [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1.5 [&_a]:text-teal-700 [&_a]:underline ${
                     contentRefining ? "pointer-events-none opacity-60" : ""
                   }`}
                 />
@@ -2064,6 +2135,18 @@ export function ContentProductionTool({
                   </p>
                 );
               })()}
+              {publishResult.categoryNames && publishResult.categoryNames.length > 0 ? (
+                <p className="mt-2 text-sm text-green-800">
+                  Category: {publishResult.categoryNames.join(", ")}
+                </p>
+              ) : null}
+              {publishResult.slack?.sent ? (
+                <p className="mt-2 text-sm text-green-800">Sent to Slack.</p>
+              ) : publishResult.slack?.error ? (
+                <p className="mt-2 text-sm text-amber-900">
+                  Draft saved in {cmsName}. Slack was not notified: {publishResult.slack.error}
+                </p>
+              ) : null}
               <p className="mt-2 text-xs text-green-800/90">
                 After you edit the article or images above, you can push changes to the same {cmsName} draft without creating a duplicate post.
               </p>

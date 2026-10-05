@@ -1,4 +1,6 @@
 import type { ArticleDiscoveryPayload } from "@/lib/articleDiscoveryTypes";
+import { MAX_POOL_AGE_MS } from "@/lib/articleDiscoveryWindows";
+import { resolveGoogleNewsUrls, isGoogleNewsArticleUrl } from "@/lib/resolveGoogleNewsUrl";
 import { GREEN_ORG_DISCOVERY_SOURCES } from "@/lib/rssFeeds";
 
 type DiscoveryArticle = {
@@ -10,10 +12,9 @@ type DiscoveryArticle = {
 
 const USER_AGENT = "SEO-Tools-Platform/1.0 (Green.org News Discovery)";
 
-/** Keep raw pool slightly wider than 24h so clustering can find earlier breaks. */
-const MAX_POOL_AGE_MS = 1000 * 60 * 60 * 36;
-const MAX_PER_SOURCE = 25;
-const MAX_TOTAL = 80;
+/** Include 24h news plus 2–3 week organic-traffic candidates. */
+const MAX_PER_SOURCE = 40;
+const MAX_TOTAL = 120;
 
 function stripCdata(text: string): string {
   return text
@@ -233,13 +234,30 @@ async function fetchGoogleNewsFallback(
 ): Promise<DiscoveryArticle[]> {
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
   const items = await fetchFeed(url, source);
-  return items
-    .map((a) => ({
-      ...a,
-      // Google News links redirect; keep title + pubDate for shortlist clustering.
-      source,
-    }))
+  const plausible = items
+    .map((a) => ({ ...a, source }))
     .filter((a) => isPlausibleArticleTitle(a.title));
+
+  const googleUrls = plausible.map((a) => a.url).filter(isGoogleNewsArticleUrl);
+  if (googleUrls.length === 0) return plausible;
+
+  const resolved = await resolveGoogleNewsUrls(googleUrls);
+  const out: DiscoveryArticle[] = [];
+  let unresolved = 0;
+  for (const a of plausible) {
+    const nextUrl = resolved.get(a.url) ?? a.url;
+    if (isGoogleNewsArticleUrl(nextUrl)) {
+      unresolved += 1;
+      continue; // never surface opaque Google News redirects
+    }
+    out.push({ ...a, url: canonicalizeUrl(nextUrl) });
+  }
+  if (unresolved > 0) {
+    console.warn(
+      `[article-discovery-rss] Dropped ${unresolved} unresolved Google News URLs for ${source}`
+    );
+  }
+  return out;
 }
 
 /**
@@ -276,9 +294,9 @@ export async function fetchDiscoveryArticlesFromRss(): Promise<ArticleDiscoveryP
 
     bySource[src.name] = articles
       .filter((a) => {
-        // Google News redirect URLs won't match hostMatchers — allow those from named fallbacks.
-        const isGoogleNews = /news\.google\.com/i.test(a.url);
-        if (a.url && !isGoogleNews && !isAllowedGreenOrgDiscoveryUrl(a.url)) return false;
+        // Drop any remaining Google News redirects; only keep allowed outlet hosts.
+        if (!a.url || isGoogleNewsArticleUrl(a.url)) return false;
+        if (!isAllowedGreenOrgDiscoveryUrl(a.url)) return false;
         const t = parseTime(a.pubDate);
         if (t <= 0) return true;
         return now - t <= MAX_POOL_AGE_MS;

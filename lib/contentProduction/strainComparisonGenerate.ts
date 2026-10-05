@@ -57,13 +57,15 @@ import {
 import { resolveStrainComparisonVoiceGuide } from "@/lib/contentProduction/strainComparisonVoiceGuide";
 import { runArticleAiDetectPass } from "@/lib/contentProduction/articleAiDetectPass";
 import { getSiteById, WP_TOOL_SCOPE } from "@/lib/wpSites";
+import { sanitizeContentDashes } from "@/lib/contentProduction/typographySanitize";
 
 function stripModelFences(raw: string): string {
-  return raw
-    .replace(/^```(?:markdown|md|html)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .replace(/\u2014/g, " - ")
-    .trim();
+  return sanitizeContentDashes(
+    raw
+      .replace(/^```(?:markdown|md|html)?\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim()
+  );
 }
 
 async function mapPool<T, R>(

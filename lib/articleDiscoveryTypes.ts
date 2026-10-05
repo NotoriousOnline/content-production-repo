@@ -1,4 +1,5 @@
 import type { GreenOrgCategory } from "@/lib/rssFeeds";
+import type { DiscoveryLane } from "@/lib/articleDiscoveryWindows";
 
 export type ArticleDiscoveryPayload = {
   title: string;
@@ -30,6 +31,22 @@ export type DiscoveryCandidate = {
   freshness_risk: boolean;
   angle: string;
   distribution_fit: string;
+  lane?: DiscoveryLane;
+};
+
+/** Ahrefs traffic + search-demand snapshot shown on every shortlisted article. */
+export type ArticleDiscoveryAhrefsData = {
+  enabled: boolean;
+  country: string;
+  /** Estimated monthly organic visits for the source URL (often 0 on brand-new news URLs). */
+  orgTraffic: number | null;
+  orgKeywords: number | null;
+  orgKeywordsTop3: number | null;
+  /** Highest matching-term monthly search volume for the story topic. */
+  topicVolume: number | null;
+  seed: string | null;
+  terms: { keyword: string; volume: number | null }[];
+  error: string | null;
 };
 
 /** Slack / UI result shape for the discovery shortlist. */
@@ -46,4 +63,7 @@ export type TitleDiscoveryOutputItem = {
   freshness_risk?: boolean;
   angle?: string;
   distribution_fit?: string;
+  ahrefs?: ArticleDiscoveryAhrefsData;
+  /** fresh = 24h news window; organic = 2–3 week article with Ahrefs traffic. */
+  lane?: DiscoveryLane;
 };

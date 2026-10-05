@@ -1,6 +1,7 @@
 /** Weed.com individual strain pages: /strains/[strain-slug]/ */
 
 import { slugifyStrainName, stripStrainWordSuffix } from "@/lib/contentProduction/strainComparison";
+import { sanitizeContentDashes } from "@/lib/contentProduction/typographySanitize";
 
 export const STRAIN_PAGE_WORD_TARGET = 700;
 export const STRAIN_PAGE_WORD_MIN = 600;
@@ -135,11 +136,12 @@ export function strainPageSuggestedPath(strainName: string): string {
 }
 
 export function strainPageFocusKeyword(strainName: string): string {
-  return `${formatStrainDisplayName(strainName).toLowerCase()} strain`.slice(0, 191);
+  // Weed.com Rank Math convention: focus keyword = post title.
+  return strainPagePostTitle(strainName).slice(0, 191);
 }
 
 export function strainPageMetaTitle(strainName: string): string {
-  return `${formatStrainDisplayName(strainName)} Strain — Effects, Terpenes & Products | Weed.com`.slice(0, 200);
+  return `${formatStrainDisplayName(strainName)} Strain, Effects, Terpenes & Products | Weed.com`.slice(0, 200);
 }
 
 export function strainPageMetaDescription(
@@ -147,8 +149,9 @@ export function strainPageMetaDescription(
   fields: Pick<StrainPageCustomFields, "strainType" | "thcRange" | "primaryEffects">
 ): string {
   const name = formatStrainDisplayName(strainName);
+  const focus = strainPageFocusKeyword(strainName);
   const effects = fields.primaryEffects.slice(0, 2).join(" and ").toLowerCase() || "distinct effects";
-  const text = `Discover ${name}: ${fields.strainType.toLowerCase()}, THC ${fields.thcRange}, known for ${effects}. Explore terpenes, flavours, and shop ${name} products at Weed.com.`;
+  const text = `${focus}: ${fields.strainType.toLowerCase()}, THC ${fields.thcRange}, known for ${effects}. Explore terpenes, flavours, and shop ${name} products at Weed.com.`;
   return text.length <= 156 ? text : `${text.slice(0, 153).trim()}...`;
 }
 
@@ -185,14 +188,14 @@ export function buildStrainPageSeedsSection(strainName: string, siteOrigin: stri
   const seedsUrl = `${siteOrigin.replace(/\/$/, "")}/seeds/`;
   return `<h2 style="${LINK_FONT}">Buy ${name} Seeds</h2>
 <p style="${LINK_FONT}">Want to grow ${name} at home? ${name} seeds are available at Weed.com alongside 300+ other premium genetics. Whether you are a first-time grower or an experienced cultivator, quality genetics make the biggest difference.</p>
-<p style="${LINK_FONT}"><a href="${seedsUrl}">Browse all cannabis seeds at Weed.com</a> — /seeds/</p>`;
+<p style="${LINK_FONT}"><a href="${seedsUrl}">Browse all cannabis seeds at Weed.com</a>.</p>`;
 }
 
-export function buildStrainPageClonesSection(strainName: string, siteOrigin: string): string {
+export function buildStrainPageClonesSection(strainName: string, _siteOrigin?: string): string {
   const name = formatStrainDisplayName(strainName);
-  const seedsUrl = `${siteOrigin.replace(/\/$/, "")}/seeds/`;
+  // No /seeds/ hyperlink here — that URL is reserved for the Buy Seeds section only.
   return `<h2 style="${LINK_FONT}">${name} Clones</h2>
-<p style="${LINK_FONT}">Prefer to start from a cutting rather than seed? ${name} clones offer a head start — you skip germination and start with a genetically identical plant to the mother. Check back for clone availability at Weed.com, or <a href="${seedsUrl}">browse seeds to start growing today</a> — /seeds/</p>`;
+<p style="${LINK_FONT}">Prefer to start from a cutting rather than seed? ${name} clones offer a head start: you skip germination and start with a genetically identical plant to the mother. Check back for clone availability at Weed.com.</p>`;
 }
 
 export function hasStrainPageSeedsSection(html: string, strainName: string): boolean {
@@ -207,7 +210,15 @@ export function hasStrainPageClonesSection(html: string, strainName: string): bo
 
 export function ensureStrainPageSeedsSection(html: string, strainName: string, siteOrigin: string): string {
   if (hasStrainPageSeedsSection(html, strainName)) return html;
-  const section = buildStrainPageSeedsSection(strainName, siteOrigin);
+  const originEsc = escapeRegex(siteOrigin.replace(/\/$/, ""));
+  const alreadyHasSeedsLink =
+    new RegExp(`href\\s*=\\s*["'][^"']*${originEsc}/seeds/?["']`, "i").test(html) ||
+    /href\s*=\s*["']\/?seeds\/?["']/i.test(html);
+  const name = formatStrainDisplayName(strainName);
+  const section = alreadyHasSeedsLink
+    ? `<h2 style="${LINK_FONT}">Buy ${name} Seeds</h2>
+<p style="${LINK_FONT}">Want to grow ${name} at home? ${name} seeds are available at Weed.com alongside 300+ other premium genetics. Whether you are a first-time grower or an experienced cultivator, quality genetics make the biggest difference. Browse cannabis seeds at Weed.com.</p>`
+    : buildStrainPageSeedsSection(strainName, siteOrigin);
   const faqMatch = html.match(/<h2[^>]*>\s*Frequently asked questions\s*<\/h2>/i);
   if (faqMatch?.index != null) {
     return `${html.slice(0, faqMatch.index).trimEnd()}\n\n${section}\n\n${html.slice(faqMatch.index)}`;
@@ -304,7 +315,7 @@ OUTPUT: Return ONLY valid JSON (no markdown fences) with this shape:
 
 HTML RULES:
 - Raw HTML only inside the html string. No <!DOCTYPE>, <html>, or <h1> (CMS sets title separately).
-- Never use the em dash (U+2014). Use " - " or commas instead.
+- Never use the em dash (U+2014) or a spaced hyphen " - " as a pause. Use commas, semicolons, or parentheses instead.
 - Font: Inter, system-ui, sans-serif on all text blocks via inline style.
 - NO Dr. Tabibi byline, NO Expert Insight blocks, NO PubMed citations, NO Sources section, NO YMYL medical claims.
 - Total word count across all HTML: ${STRAIN_PAGE_WORD_MIN}–${STRAIN_PAGE_WORD_MAX} words.
@@ -317,7 +328,7 @@ TONE & CLAIMS (T2 only):
 REQUIRED HTML STRUCTURE:
 
 1) Intro <p> only (50–80 words, ABOVE all H2s)
-- First sentence states the key characteristic.
+- First sentence states the key characteristic and includes the focus keyword naturally (exact phrase from the user message).
 - What makes this strain distinctive. Who it is for. No health claims.
 - Mention strain type, THC range, dominant terpene, and primary use context.
 
@@ -330,8 +341,8 @@ REQUIRED HTML STRUCTURE:
 <h2>THC level</h2> (~40 words) — practical meaning; beginner/intermediate/experienced.
 <h2>CBD level</h2> (~30 words) — contribution to overall experience.
 
-3) <h2>Buy [Strain Name] Seeds</h2> — required seeds CTA (link to verified /seeds/ URL from list).
-4) <h2>[Strain Name] Clones</h2> — required clones CTA (link to /seeds/ when no clone URL verified).
+3) <h2>Buy [Strain Name] Seeds</h2> — required seeds CTA (link to verified /seeds/ URL from list; this is the ONLY place /seeds/ may be linked).
+4) <h2>[Strain Name] Clones</h2> — required clones CTA in plain text only (do NOT link /seeds/ again; mention clone availability without a duplicate hyperlink).
 
 5) <h2>Frequently asked questions</h2>
 Exactly 4 or 5 Q&A pairs. Each question <h3>, answer <p> (40–60 words each).
@@ -346,12 +357,14 @@ TERPENE COLOUR SYSTEM (reference in terpene copy when relevant):
 ${terpeneColorBlock}
 
 INTERNAL LINKS (required when VERIFIED INTERNAL LINKS is non-empty):
-- Link /strains/ hub with anchor text "cannabis strains" in intro or Effects section.
-- Link /seeds/ with anchor "buy cannabis seeds" in Buy Seeds section.
-- Link one shop category (/flower-prerolls/ or /vapes-carts/) with anchor matching product type.
-- Link 2 related strain pages (same type or similar effects).
+- Each verified URL may appear in at most ONE <a href> on the entire page. Never repeat the same link in another section or FAQ.
+- Link /strains/ hub with anchor text "cannabis strains" in intro or Effects section (once).
+- Link /seeds/ with anchor "buy cannabis seeds" in Buy Seeds section only (once).
+- Link one shop category (/flower-prerolls/ or /vapes-carts/) with anchor matching product type (once).
+- Link up to 2 related strain pages (same type or similar effects), each URL once.
 - ONLY use <a href="..."> for URLs listed under VERIFIED INTERNAL LINKS.
 - Do NOT invent weed.com URLs.
+- FAQ answers may mention seeds/shops in plain text; do not re-link a URL already used above.
 
 customFields must align with the prose (THC/CBD ranges, terpenes, effects, flavours, help-with).`;
 }
@@ -370,7 +383,7 @@ Suggested URL path: ${strainPageSuggestedPath(args.strainName)}
 Focus keyword: ${strainPageFocusKeyword(args.strainName)}
 Meta title: ${strainPageMetaTitle(args.strainName)}${lineage}
 
-VERIFIED INTERNAL LINKS (only these may appear in <a href> — no other weed.com URLs):
+VERIFIED INTERNAL LINKS (only these may appear in <a href> — each URL at most once on the page):
 ${args.verifiedLinks}
 
 Write the full strain page JSON now (customFields + html).`;
@@ -382,7 +395,7 @@ export function parseStrainPageModelResponse(raw: string): { customFields: Strai
   if (objMatch) cleaned = objMatch[0];
   cleaned = cleaned.replace(/,(\s*[}\]])/g, "$1");
   const parsed = JSON.parse(cleaned) as { customFields?: unknown; html?: unknown };
-  const html = typeof parsed.html === "string" ? parsed.html.replace(/\u2014/g, " - ").trim() : "";
+  const html = typeof parsed.html === "string" ? sanitizeContentDashes(parsed.html.trim()) : "";
   if (!html) throw new Error("Model response missing html field");
   return {
     customFields: normalizeStrainPageCustomFields(parsed.customFields),

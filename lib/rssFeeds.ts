@@ -26,14 +26,14 @@ export const GREEN_ORG_DISCOVERY_SOURCES: GreenOrgDiscoverySource[] = [
     feedUrl: "https://feeds.bloomberg.com/green.rss",
     htmlUrl: "https://www.bloomberg.com/green",
     /** When native feed is blocked, query Google News for Bloomberg Green coverage. */
-    googleNewsQuery: "source:Bloomberg (green OR climate OR renewable OR solar OR EV) when:2d",
+    googleNewsQuery: "source:Bloomberg (green OR climate OR renewable OR solar OR EV) when:21d",
     hostMatchers: ["bloomberg.com"],
   },
   {
     name: "Reuters Environment",
     feedUrl: "https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best&best-topics=environment",
     htmlUrl: "https://www.reuters.com/business/environment/",
-    googleNewsQuery: "source:Reuters (environment OR climate OR renewable OR \"clean energy\") when:2d",
+    googleNewsQuery: "source:Reuters (environment OR climate OR renewable OR \"clean energy\") when:21d",
     hostMatchers: ["reuters.com", "reutersagency.com"],
   },
   {

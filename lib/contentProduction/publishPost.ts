@@ -4,6 +4,7 @@ import { lockExpertBoxTypography, stripLeadingPostTitleH1 } from "@/lib/postHtml
 import {
   categoriesForGreenOrgPublish,
   pickGreenOrgCategoryIds,
+  isGardenSite,
   isGreenOrgSite,
   isPrefabSite,
   PREFAB_CATEGORY_NAMES,
@@ -20,6 +21,7 @@ import {
   updateMediaDetails,
   updatePostRankMathMeta,
 } from "@/lib/wordpressClient";
+import { notifyGreenOrgDraftCreated } from "@/lib/contentProduction/greenOrgDraftSlack";
 import { compressImageForUpload } from "@/lib/contentProduction/wpImageCompress";
 import { errorMessage, serverLog } from "@/lib/serverLog";
 import { formatWpNetworkErrorHint, isTransientWpNetworkError } from "@/lib/wpFetch";
@@ -213,6 +215,16 @@ function enforceShopNowLinksOpenInNewTab(html: string): string {
   });
 }
 
+/** Garden.com categories come only from the live site, never the green.org snapshot. */
+async function listGardenCategories(site: Parameters<typeof listAllCategories>[0]) {
+  try {
+    return await listAllCategories(site);
+  } catch (e) {
+    console.warn("[publish] Garden.com category list failed:", errorMessage(e));
+    return [];
+  }
+}
+
 export async function postPublish(request: Request, toolScope: WPToolScope) {
   try {
     const raw = await request.text();
@@ -347,6 +359,7 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
     }
     const taxonomyOpts: { categories?: number[]; tags?: number[] } = {};
     let greenOrgCategoryIds: number[] | undefined;
+    let greenOrgCategoryNames: string[] | undefined;
     if (toolScope === WP_TOOL_SCOPE.weedComContentProduction) {
       const learnCategoryId = await getCategoryIdByName(site, "learn");
       if (learnCategoryId != null && learnCategoryId > 0) {
@@ -355,8 +368,18 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
         console.warn('[publish] Could not resolve category "learn"; publishing without category assignment.');
       }
       taxonomyOpts.tags = [4337];
-    } else if (toolScope === WP_TOOL_SCOPE.contentProduction && (isGreenOrgSite(site) || isPrefabSite(site))) {
-      const wpCategories = await categoriesForGreenOrgPublish(() => listAllCategories(site));
+    } else if (
+      toolScope === WP_TOOL_SCOPE.contentProduction &&
+      (isGreenOrgSite(site) || isPrefabSite(site) || isGardenSite(site))
+    ) {
+      const categorySiteLabel = isGardenSite(site)
+        ? "Garden.com"
+        : isPrefabSite(site)
+          ? "Prefab.com"
+          : "Green.org";
+      const wpCategories = isGardenSite(site)
+        ? await listGardenCategories(site)
+        : await categoriesForGreenOrgPublish(() => listAllCategories(site));
       if (wpCategories.length > 0) {
         const constrainedCategories = isPrefabSite(site)
           ? restrictCategoriesToNames(wpCategories, PREFAB_CATEGORY_NAMES)
@@ -366,14 +389,23 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
           keywords,
           articleHtml: finalContent,
           categories: constrainedCategories,
+          siteLabel: categorySiteLabel,
         });
         if (greenOrgCategoryIds.length > 0) {
           taxonomyOpts.categories = greenOrgCategoryIds;
+          if (isGreenOrgSite(site) || isGardenSite(site)) {
+            const nameById = new Map(constrainedCategories.map((category) => [category.id, category.name]));
+            greenOrgCategoryNames = greenOrgCategoryIds
+              .map((id) => nameById.get(id)?.trim())
+              .filter((name): name is string => Boolean(name));
+          }
         } else {
-          console.warn(`[publish] ${isPrefabSite(site) ? "Prefab" : "Green.org"}: no category ids chosen; publishing without category assignment.`);
+          console.warn(
+            `[publish] ${categorySiteLabel}: no category ids chosen; publishing without category assignment.`
+          );
         }
       } else {
-        console.warn(`[publish] ${isPrefabSite(site) ? "Prefab" : "Green.org"}: no categories available (REST and snapshot empty).`);
+        console.warn(`[publish] ${categorySiteLabel}: no categories available from WordPress.`);
       }
     }
     const publishOpts = {
@@ -393,7 +425,10 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
 
     let yoastMetaOk: boolean | undefined;
     let rankMathOk: boolean | undefined;
-    if (toolScope === WP_TOOL_SCOPE.contentProduction && (isGreenOrgSite(site) || isPrefabSite(site))) {
+    if (
+      toolScope === WP_TOOL_SCOPE.contentProduction &&
+      (isGreenOrgSite(site) || isPrefabSite(site) || isGardenSite(site))
+    ) {
       yoastMetaOk = await updatePostYoastMeta(site, postId, {
         metadesc,
         focuskw: rankMathFocusKw,
@@ -419,12 +454,29 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
       );
     }
 
+    const slack =
+      existingPostId == null &&
+      toolScope === WP_TOOL_SCOPE.contentProduction &&
+      isGreenOrgSite(site)
+        ? await notifyGreenOrgDraftCreated({
+            title,
+            editUrl,
+            postUrl: link,
+            categories: greenOrgCategoryNames,
+            excerpt: buildMetaDescription(finalContent, 320),
+          })
+        : undefined;
+    if (slack && !slack.sent) {
+      console.warn("[publish] Green.org draft Slack notice failed:", slack.error);
+    }
+
     return NextResponse.json({
       postId,
       postUrl: link,
       editUrl,
       status,
       updated: existingPostId != null,
+      ...(slack ? { slack } : {}),
       site: { name: site.name, url: site.url },
       ...(yoastMetaOk !== undefined
         ? {
@@ -440,7 +492,12 @@ export async function postPublish(request: Request, toolScope: WPToolScope) {
             }
           : {}),
       ...(greenOrgCategoryIds != null && greenOrgCategoryIds.length > 0
-        ? { wordPressCategoryIds: greenOrgCategoryIds }
+        ? {
+            wordPressCategoryIds: greenOrgCategoryIds,
+            ...(greenOrgCategoryNames != null && greenOrgCategoryNames.length > 0
+              ? { categoryNames: greenOrgCategoryNames }
+              : {}),
+          }
         : {}),
     });
   } catch (err) {

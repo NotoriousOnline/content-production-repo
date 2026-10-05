@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { isInoreaderConfigured } from "@/lib/inoreaderClient";
+import { attachSocketStatus, diagnoseSlackSetup, type SlackSetupStatus } from "@/lib/articleDiscoverySlack";
+import { startSlackSocketMode } from "@/lib/slackSocketMode";
 import { GREEN_ORG_DISCOVERY_SOURCES } from "@/lib/rssFeeds";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +13,9 @@ export type ArticleDiscoveryInfo = {
   inoreaderReady: boolean;
   /** Safe display label; set INOREADER_STREAM_LABEL to customize. */
   inoreaderDisplayLabel: string | null;
+  ahrefsReady: boolean;
+  slackInteractive: boolean;
+  slackSetup: SlackSetupStatus;
 };
 
 export async function GET(): Promise<NextResponse<ArticleDiscoveryInfo>> {
@@ -27,12 +32,17 @@ export async function GET(): Promise<NextResponse<ArticleDiscoveryInfo>> {
         : "Inoreader");
   }
 
+  const slackSetup = attachSocketStatus(await diagnoseSlackSetup(), startSlackSocketMode());
+
   const body: ArticleDiscoveryInfo = {
     primarySource: inoreaderReady ? "inoreader+six-sources" : "six-sources",
     sourceCount: GREEN_ORG_DISCOVERY_SOURCES.length,
     sourceNames: GREEN_ORG_DISCOVERY_SOURCES.map((s) => s.name),
     inoreaderReady,
     inoreaderDisplayLabel,
+    ahrefsReady: Boolean(process.env.AHREFS_API_KEY?.trim()),
+    slackInteractive: slackSetup.ticksReady,
+    slackSetup,
   };
   return NextResponse.json(body);
 }
