@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { callClaude, isClaudeServiceUnavailableError } from "@/lib/anthropic";
+import {
+  fetchHighVolumeKeywordsForArticle,
+  formatAhrefsPromptBlock,
+  mergeKeywordLists,
+} from "@/lib/contentProduction/ahrefsHighVolumeKeywords";
 import { errorMessage, serverLog } from "@/lib/serverLog";
 import { lockExpertBoxTypography, stripLeadingPostTitleH1 } from "@/lib/postHtml";
 import {
@@ -186,16 +191,88 @@ Layer 1 Expert Insight / YMYL (Contentenator): Before final output, enforce inte
   return "";
 }
 
-function isGardenSiteUrl(rawUrl: string): boolean {
+function siteHostname(rawUrl: string): string {
   const raw = rawUrl.trim();
-  if (!raw) return false;
+  if (!raw) return "";
   try {
     const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
-    const host = u.hostname.toLowerCase();
-    return host === "garden.com" || host.endsWith(".garden.com");
+    return u.hostname.toLowerCase().replace(/^www\./, "");
   } catch {
-    return /garden\.com/i.test(raw);
+    return "";
   }
+}
+
+function hostIs(rawUrl: string, apex: string): boolean {
+  const host = siteHostname(rawUrl);
+  if (host) return host === apex || host.endsWith(`.${apex}`);
+  return new RegExp(`(?:^|[./])${apex.replace(/\./g, "\\.")}(?:$|[/\\s])`, "i").test(rawUrl);
+}
+
+function isGardenSiteUrl(rawUrl: string): boolean {
+  return hostIs(rawUrl, "garden.com");
+}
+
+function isGreenOrgSiteUrl(rawUrl: string): boolean {
+  return hostIs(rawUrl, "green.org");
+}
+
+function isPrefabSiteUrl(rawUrl: string): boolean {
+  return hostIs(rawUrl, "prefab.com");
+}
+
+/** green.org, garden.com, and prefab.com: bullets/tables only from named primary sources. */
+function isSourcedEditorialSite(rawUrl: string): boolean {
+  return isGreenOrgSiteUrl(rawUrl) || isGardenSiteUrl(rawUrl) || isPrefabSiteUrl(rawUrl);
+}
+
+const SOURCED_LIST_AND_TABLE_RULES = `Scannable facts from authentic sources (required when the topic supports them):
+- Use real HTML <ul><li> lists for steps, checklists, requirements, symptoms, pros and cons, or any run of three or more distinct facts. Do not fake bullets with dashes or asterisks inside a <p>.
+- Use a real HTML <table> when the reader is comparing items, specs, costs, timelines, sizes, zones, ratings, or side-by-side facts. Put a one-sentence <p> above the table naming what it compares and which source the figures come from. Include a <thead> with <th> cells.
+- Copy this table pattern and keep the inline styles (replace the labels and cells only):
+<table style="width:100%;border-collapse:collapse;margin:1.25rem 0 1.5rem;font-size:0.95rem;line-height:1.45;">
+<thead><tr>
+<th style="text-align:left;padding:0.55rem 0.75rem;border-bottom:2px solid #cbd5e1;font-weight:600;">Label</th>
+<th style="text-align:left;padding:0.55rem 0.75rem;border-bottom:2px solid #cbd5e1;font-weight:600;">Detail</th>
+</tr></thead>
+<tbody>
+<tr><td style="padding:0.5rem 0.75rem;border-bottom:1px solid #e2e8f0;">Row</td><td style="padding:0.5rem 0.75rem;border-bottom:1px solid #e2e8f0;">Sourced fact</td></tr>
+</tbody></table>
+- Skip the table only when filling it would require an invented number, fee, size, date, or rating. A sourced bullet list is still required when the article has list-shaped facts.
+- Every number, range, date, fee, dimension, or named statistic in a bullet or table cell must come from a primary source you can name. If you cannot name that source, leave the number out and write a qualitative sentence.
+- Do not invent statistics, prices, code sections, toxicity ratings, study results, or URLs to fill a list or table.
+- End with <h2>Sources</h2> and a <ul> of the works actually used. Each item names the organization or author, year, and document title, plus a live https URL to that specific page or report. Homepages and search-result URLs do not count.
+- External links are allowed only inside that Sources list. In the body, name the source in plain text. Do not put links in headings or table header cells.
+- Never guess a URL, DOI, statute number, or report title. If the institution and document are known but the exact URL is not, cite the name and add [VERIFY] instead of a link.
+- Wikipedia, unsourced blogs, and news roundups are not acceptable sources for numbers in bullets or tables.`;
+
+function sourcedEditorialPrompt(siteUrl: string): string {
+  if (isGreenOrgSiteUrl(siteUrl)) {
+    return `
+
+GREEN.ORG EDITORIAL CONTEXT — apply to this article.
+Voice: specific, evidence-led sustainability journalism. No hype, no vague "experts say" claims.
+Primary sources for facts, bullets, and tables: IPCC assessment reports, IEA, U.S. EPA, U.S. EIA, U.S. DOE, NOAA, NASA, UNEP, official national statistics agencies, and peer-reviewed papers with a real DOI or publisher URL.
+${SOURCED_LIST_AND_TABLE_RULES}`;
+  }
+  if (isPrefabSiteUrl(siteUrl)) {
+    return `
+
+PREFAB.COM EDITORIAL CONTEXT — apply to this article.
+Voice: practical and precise about prefab homes, ADUs, construction, cost, and rules. Do not invent permit fees, setbacks, lot coverage, square footage, or price ranges.
+Primary sources for facts, bullets, and tables: California HCD ADU publications, the cited California code on leginfo.legislature.ca.gov, HUD, the cited jurisdiction's published ordinance, U.S. Census Bureau housing data, DOE or ENERGY STAR building guidance, and a manufacturer's own published spec page when a named brand is compared.
+If a figure depends on the city and you cannot cite that ordinance, say it varies by jurisdiction and do not put a number in the table.
+${SOURCED_LIST_AND_TABLE_RULES}`;
+  }
+  if (isGardenSiteUrl(siteUrl)) {
+    return `
+
+${SOURCED_LIST_AND_TABLE_RULES}
+Garden.com table and list use:
+- Species care pages: a care-summary table (light, water, soil, temperature, feeding) using RHS, Kew, or extension figures.
+- Diagnostic pages: a symptom, cause, and fix table or bullet list with measurable thresholds.
+- Toxicity pages: a sourced symptom or toxin table from ASPCA, NHS, or a peer-reviewed source. Do not guess a toxicity class.`;
+  }
+  return "";
 }
 
 function gardenComLayerPrompt(siteUrl: string): string {
@@ -223,6 +300,7 @@ Formatting and style:
 - Use locale-aware spelling from brief context (UK for EN-GB, US for EN-US). If locale is not provided, default to UK spelling.
 - For temperature and care ranges, include both units when relevant (e.g. 16-24 C and 61-75 F).
 - Keep structure scannable with clear <h2>/<h3>, practical steps, and actionable FAQ.
+- Prefer a bullet list or a sourced comparison table over a long paragraph when the facts are a list or a comparison. Figures in those lists and tables must trace to RHS, Kew, ASPCA, NHS, USDA, a university extension, or a peer-reviewed paper.
 
 Internal linking standards:
 - First internal link should appear within the first ~400 words when relevant links are available.
@@ -471,7 +549,7 @@ If any check fails, revise before returning output.`;
 export async function postGenerateContent(request: Request, toolScope: WPToolScope) {
   try {
     const body = await request.json();
-    const { siteId, title, keywords, wordCount, editorialBrief, contentAngle, productTypeForLinks } = body;
+    const { siteId, title, keywords: keywordsRaw, wordCount, editorialBrief, contentAngle, productTypeForLinks } = body;
     const bodyRecord = body as Record<string, unknown>;
     const transcriptRaw =
       typeof bodyRecord.transcript === "string" ? bodyRecord.transcript.trim().slice(0, MAX_TRANSCRIPT_CHARS) : "";
@@ -506,12 +584,17 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
       );
     }
 
-    if (!siteId || !title || !Array.isArray(keywords) || typeof wordCount !== "number") {
+    if (!siteId || !title || !Array.isArray(keywordsRaw) || typeof wordCount !== "number") {
       return NextResponse.json(
         { error: "Missing or invalid fields: siteId, title, keywords (array), wordCount (number)" },
         { status: 400 }
       );
     }
+    let keywords = (keywordsRaw as unknown[])
+      .filter((k): k is string => typeof k === "string")
+      .map((k) => k.trim())
+      .filter(Boolean);
+
     if (!ALLOWED_WORD_COUNTS.has(wordCount)) {
       return NextResponse.json({ error: "wordCount must be one of 1500, 2000, 2500, or 3000" }, { status: 400 });
     }
@@ -525,6 +608,32 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
     const site = await getSiteById(siteId, toolScope);
     if (!site) {
       return NextResponse.json({ error: "Site not found" }, { status: 404 });
+    }
+
+    let ahrefsPromptBlock = "";
+    let ahrefsMergedCount = 0;
+    let ahrefsError: string | null = null;
+    const ahrefsKeyEnabled = Boolean(process.env.AHREFS_API_KEY?.trim());
+    const ahrefsCountry = (process.env.AHREFS_KEYWORD_COUNTRY ?? "us").trim().toLowerCase().slice(0, 2) || "us";
+    let ahrefsTerms: { keyword: string; volume: number | null }[] = [];
+    if (!isRefinement && ahrefsKeyEnabled && typeof title === "string") {
+      const hv = await fetchHighVolumeKeywordsForArticle({
+        title,
+        existingKeywords: keywords,
+      });
+      if (hv.ok && hv.terms.length > 0) {
+        ahrefsTerms = hv.terms;
+        ahrefsMergedCount = hv.terms.length;
+        keywords = mergeKeywordLists(
+          hv.terms.map((t) => t.keyword),
+          keywords,
+          18
+        );
+        ahrefsPromptBlock = `\n\n${formatAhrefsPromptBlock(hv.terms, hv.country)}`;
+      } else {
+        ahrefsError = hv.error ?? "Ahrefs returned no high-volume terms";
+        console.warn("[generate-content] Ahrefs:", ahrefsError);
+      }
     }
 
     const productHint =
@@ -609,9 +718,12 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
     }
 
     const tonePrompt = site.tone_prompt ?? "Write in a clear, authoritative, and engaging editorial tone.";
-    const gardenPrompt = gardenComLayerPrompt(site.url ?? "");
+    const siteUrl = site.url ?? "";
+    const sourcedFacts = isSourcedEditorialSite(siteUrl);
+    const gardenPrompt = gardenComLayerPrompt(siteUrl);
+    const sourcedPrompt = sourcedEditorialPrompt(siteUrl);
     const gardenTypePrompt = gardenPerContentTypePrompt({
-      siteUrl: site.url ?? "",
+      siteUrl,
       title,
       editorialBrief: typeof editorialBrief === "string" ? editorialBrief : "",
       contentAngle: typeof contentAngle === "string" ? contentAngle : "",
@@ -619,9 +731,11 @@ export async function postGenerateContent(request: Request, toolScope: WPToolSco
     const initialDraftSystemTail = `You are an expert SEO content writer. Write a complete blog post in valid HTML (not markdown).
 Never wrap the output in code fences: do not use triple backticks, do not write \`\`\`html or \`\`\` before or after the HTML. Return raw HTML only.
 Do NOT put the article title in the body: no <h1> and no title heading. The CMS sets the post title separately.
-Start the body with an introduction using <p>, or the first <h2> section heading. Use <h2> and <h3> only inside the article. Target ${wordCount} words with tight control: keep visible text in ${wordCountBounds(wordCount).min}-${wordCountBounds(wordCount).max} words (HTML tags do not count). In the main body, include editorial internal links (<a>) to post/page URLs from the **Editorial posts and pages** list, chosen for maximum relevance to nearby copy. ${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? "For Weed.com, include exactly 3 editorial links when 3+ are available (otherwise use all available)." : "Use 1 to 3 editorial links when available."} You may add separate product/Shop Now usage from the **Products** list; editorial links are not optional when the editorial list is non-empty. Use descriptive anchor text. Do not add external links${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? " except up to three PubMed PMID links, only inside Dr. Tabibi Expert Insight expert-cite lines (and duplicated in Sources per Bible)" : ""}.
+Start the body with an introduction using <p>, or the first <h2> section heading. Use <h2> and <h3> only inside the article. Target ${wordCount} words with tight control: keep visible text in ${wordCountBounds(wordCount).min}-${wordCountBounds(wordCount).max} words (HTML tags do not count). In the main body, include editorial internal links (<a>) to post/page URLs from the **Editorial posts and pages** list, chosen for maximum relevance to nearby copy. ${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? "For Weed.com, include exactly 3 editorial links when 3+ are available (otherwise use all available)." : "Use 1 to 3 editorial links when available."} You may add separate product/Shop Now usage from the **Products** list; editorial links are not optional when the editorial list is non-empty. Use descriptive anchor text. Do not add external links${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? " except up to three PubMed PMID links, only inside Dr. Tabibi Expert Insight expert-cite lines (and duplicated in Sources per Bible)" : sourcedFacts ? " except live https URLs inside the Sources section, each pointing at one specific primary page or report (no homepages, no search URLs)" : ""}.
 
 Typography: Never use the em dash character (Unicode U+2014). Do not type "—". Do not use a spaced hyphen " - " as a pause. Use commas, semicolons, or parentheses instead when you need a pause or aside.
+
+SEO keywords: When the user message lists Ahrefs high-volume phrases, weave the primary phrase and 2-4 supporting phrases into body copy and FAQ answers naturally. Do not stuff. Do not put exact-match target phrases in headings. Do not force the primary phrase into the first sentence.
 
 Structure: Near the end, include FAQs before Sources/footer:
 ${ 
@@ -639,10 +753,11 @@ ${
     const systemPrompt = `${tonePrompt}
 ${brandAddendumForScope(toolScope)}
 ${gardenPrompt}
+${sourcedPrompt}
 ${gardenTypePrompt}
 ${weedLayer1BiblePrompt(toolScope)}
 
-${isRefinement ? CONTENT_REFINEMENT_SYSTEM_TAIL : initialDraftSystemTail}`;
+${isRefinement ? `${CONTENT_REFINEMENT_SYSTEM_TAIL}${sourcedFacts ? "\n\nFor this site, keep existing <ul>, <ol>, and <table> blocks. New figures in bullets or tables must trace to a real primary-source URL in the Sources section. Do not invent statistics or links." : ""}` : initialDraftSystemTail}`;
 
     const isProductCandidate = (l: LinkCandidate) => l.linkKind === "product";
     const editorialCandidates = internalLinks.filter((l) => !isProductCandidate(l));
@@ -724,7 +839,7 @@ ${transcriptRaw}
 
     const initialDraftUserMessage = `Title: ${title}
 
-Keywords: ${keywords.join(", ")}${briefExtra ? `\n\n${briefExtra}` : ""}${weedProductVariationInstruction}
+Keywords: ${keywords.join(", ")}${ahrefsPromptBlock}${briefExtra ? `\n\n${briefExtra}` : ""}${weedProductVariationInstruction}
 
 Internal link candidates (editorial: for Weed.com pick exactly 3 most-relevant post/page URLs when possible; products: separate Shop Now / commerce usage; each URL at most once):
 ${linksText}${tabibiLibraryBlock}
@@ -732,7 +847,7 @@ ${weedExpertInsightCountInstruction}
 ${weedFaqCountInstruction}
 ${wordCountInstruction}
 
-Write the full HTML blog post.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? "" : " Include the FAQ block as specified (1 or 2 FAQ subsections by topic fit, bullets in answers where it helps)."} Remember: no em dash character anywhere in the HTML. Do not output an <h1>; the post title is set only in WordPress. Start with <p> or <h2>.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? ` Body, FAQ, cards, footers: Inter-led font stack per Bible. Expert Insight (.expert-box): every opening tag in that block must include font-family:Inter,sans-serif!important (including PMID <a>) so paste/theme cannot override. FAQ: Bible outer wrapper + <h2>Frequently asked questions</h2> + <h3>/<p> pairs. Double-check every internal link: when the Editorial posts and pages list is non-empty, include exactly 3 most-relevant <a> links to those post/page URLs in the main body when 3+ are available (otherwise include all available); Shop Now product blocks are separate and do not satisfy the editorial link requirement. In all Shop Now product blocks, both the image link and the "Shop Now →" button link must include target="_blank" and rel="noopener noreferrer". Anchor text must be specific (never rely on 'this guide' / 'this breakdown' style phrasing). Product names must follow a clear contextual lead-in. Do not force the primary keyword into the opening of the first paragraph or into headings. Before finalizing: run Contentenator on every Expert Insight box (Bible v7) — study-type labels match the PubMed record type; each PMID matches that paper (no unrelated or fabricated IDs); specific numeric or outcome claims trace to that same PMID, not a different paper or a review-only mention of another study. At most 3 PubMed citations total; PMIDs only in Expert Insight expert-cite lines; each must use a verified PMID article URL (https://pubmed.ncbi.nlm.nih.gov/<digits>/) — never PubMed ?term= search links — with author/journal/year in adjacent text. Do not output a Sources HTML block: the server appends Sources using only PMIDs cited in Expert Insight expert-cite lines (no additional PMIDs). Every Dr. Tabibi Expert Insight block and every product card must use the Bible templates with full inline style=\"...\" attributes (WordPress will not load custom CSS for these). When medication interactions are relevant, include the amber drug-interaction disclaimer box (⚕ icon) from the Bible. End with the legal footer only — required verbatim opening \"For adults 21+ only. Cannabis laws vary by state.\" plus emergency routing; never omit. The article must end completely — never stop mid-sentence.` : ""}`;
+Write the full HTML blog post.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? "" : " Include the FAQ block as specified (1 or 2 FAQ subsections by topic fit, bullets in answers where it helps)."}${sourcedFacts ? " Where the topic has list-shaped or comparable facts, include at least one HTML bullet list and one HTML table. Every number in them must trace to a named primary source in the Sources section. If a figure cannot be sourced, leave it out." : ""} Remember: no em dash character anywhere in the HTML. Do not output an <h1>; the post title is set only in WordPress. Start with <p> or <h2>.${toolScope === WP_TOOL_SCOPE.weedComContentProduction ? ` Body, FAQ, cards, footers: Inter-led font stack per Bible. Expert Insight (.expert-box): every opening tag in that block must include font-family:Inter,sans-serif!important (including PMID <a>) so paste/theme cannot override. FAQ: Bible outer wrapper + <h2>Frequently asked questions</h2> + <h3>/<p> pairs. Double-check every internal link: when the Editorial posts and pages list is non-empty, include exactly 3 most-relevant <a> links to those post/page URLs in the main body when 3+ are available (otherwise include all available); Shop Now product blocks are separate and do not satisfy the editorial link requirement. In all Shop Now product blocks, both the image link and the "Shop Now →" button link must include target="_blank" and rel="noopener noreferrer". Anchor text must be specific (never rely on 'this guide' / 'this breakdown' style phrasing). Product names must follow a clear contextual lead-in. Do not force the primary keyword into the opening of the first paragraph or into headings. Before finalizing: run Contentenator on every Expert Insight box (Bible v7) — study-type labels match the PubMed record type; each PMID matches that paper (no unrelated or fabricated IDs); specific numeric or outcome claims trace to that same PMID, not a different paper or a review-only mention of another study. At most 3 PubMed citations total; PMIDs only in Expert Insight expert-cite lines; each must use a verified PMID article URL (https://pubmed.ncbi.nlm.nih.gov/<digits>/) — never PubMed ?term= search links — with author/journal/year in adjacent text. Do not output a Sources HTML block: the server appends Sources using only PMIDs cited in Expert Insight expert-cite lines (no additional PMIDs). Every Dr. Tabibi Expert Insight block and every product card must use the Bible templates with full inline style=\"...\" attributes (WordPress will not load custom CSS for these). When medication interactions are relevant, include the amber drug-interaction disclaimer box (⚕ icon) from the Bible. End with the legal footer only — required verbatim opening \"For adults 21+ only. Cannabis laws vary by state.\" plus emergency routing; never omit. The article must end completely — never stop mid-sentence.` : ""}`;
 
     const refinementUserMessage = `Title: ${title}
 
@@ -817,10 +932,20 @@ Output the complete revised HTML only. No markdown code fences.`;
 
     return NextResponse.json({
       content,
+      keywords,
       internalLinksUsed: used,
       wordCount: wordCountActual,
       refinement: isRefinement,
       codeGuards: aiPass.codeGuards,
+      sources: {
+        ahrefs: {
+          enabled: ahrefsKeyEnabled,
+          mergedCount: ahrefsMergedCount,
+          error: ahrefsError,
+          country: ahrefsKeyEnabled ? ahrefsCountry : null,
+          terms: ahrefsTerms,
+        },
+      },
       ...(toolScope === WP_TOOL_SCOPE.weedComContentProduction && tabibiForArticle.length > 0
         ? {
             tabibiExpertInsightPmidsSuggested: tabibiForArticle.map((e) => e.pmid),

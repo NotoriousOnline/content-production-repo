@@ -33,14 +33,15 @@ async function mergeInoreaderIfConfigured(): Promise<{
   }
 
   try {
-    const raw = await fetchInoreaderStreamArticles(streamId, 40);
+    const raw = await fetchInoreaderStreamArticles(streamId, 80);
     const fromInoreader: ArticleDiscoveryPayload[] = raw
       .filter((a) => isAllowedGreenOrgDiscoveryUrl(a.url))
-      .slice(0, 20)
-      .map(({ title, url, source: src }) => ({
+      .slice(0, 50)
+      .map(({ title, url, source: src, pubDate }) => ({
         title,
         url,
         source: src || "Inoreader",
+        pubDate: pubDate || undefined,
       }));
 
     const merged = [...fromInoreader, ...rss];
@@ -54,7 +55,7 @@ async function mergeInoreaderIfConfigured(): Promise<{
       seenUrl.add(u);
       seenTitle.add(t);
       deduped.push(a);
-      if (deduped.length >= 80) break;
+      if (deduped.length >= 120) break;
     }
 
     const sidLog = streamId.length > 90 ? `${streamId.slice(0, 90)}…` : streamId;

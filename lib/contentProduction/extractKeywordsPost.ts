@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { fetchMatchingTermsByVolume } from "@/lib/ahrefsClient";
+import {
+  fetchHighVolumeKeywordsForArticle,
+  mergeKeywordLists,
+} from "@/lib/contentProduction/ahrefsHighVolumeKeywords";
 import { errorMessage, serverLog } from "@/lib/serverLog";
 import { WP_TOOL_SCOPE, type WPToolScope } from "@/lib/wpSites";
 
@@ -56,21 +59,6 @@ function ensureWordPressHighIntentPhrases(keywords: string[], title: string): st
   return out.slice(0, 18);
 }
 
-function mergeKeywordLists(ahrefsList: string[], claudeList: string[], maxTotal: number): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const k of [...ahrefsList, ...claudeList]) {
-    const t = k.trim();
-    if (!t) continue;
-    const low = t.toLowerCase();
-    if (seen.has(low)) continue;
-    seen.add(low);
-    out.push(t);
-    if (out.length >= maxTotal) break;
-  }
-  return out;
-}
-
 export async function postExtractKeywords(request: Request, toolScope: WPToolScope) {
   try {
     const body = await request.json();
@@ -79,26 +67,43 @@ export async function postExtractKeywords(request: Request, toolScope: WPToolSco
       return NextResponse.json({ error: "title is required" }, { status: 400 });
     }
     const safeTitle = title.slice(0, 400);
+    const existingKeywords = Array.isArray(body.keywords)
+      ? (body.keywords as unknown[])
+          .filter((k): k is string => typeof k === "string")
+          .map((k) => k.trim())
+          .filter(Boolean)
+          .slice(0, 8)
+      : [];
 
     const ahrefsKey = process.env.AHREFS_API_KEY?.trim() ?? "";
-    const ahrefsCountry = (process.env.AHREFS_KEYWORD_COUNTRY ?? "us").trim().toLowerCase().slice(0, 2) || "us";
-
     let ahrefsKeywords: string[] = [];
     let ahrefsError: string | undefined;
     let ahrefsMergedCount = 0;
+    let ahrefsCountry: string | null = ahrefsKey ? (process.env.AHREFS_KEYWORD_COUNTRY ?? "us").trim().toLowerCase().slice(0, 2) || "us" : null;
+    let ahrefsTerms: { keyword: string; volume: number | null }[] = [];
+    let ahrefsSeed: string | null = null;
 
     if (ahrefsKey) {
-      const ahrefsResult = await fetchMatchingTermsByVolume(ahrefsKey, {
-        seedKeyword: safeTitle,
-        country: ahrefsCountry,
-        limit: 20,
+      const ahrefsResult = await fetchHighVolumeKeywordsForArticle({
+        title: safeTitle,
+        existingKeywords,
       });
+      ahrefsCountry = ahrefsResult.country;
+      ahrefsSeed = ahrefsResult.seedUsed;
       if (ahrefsResult.ok) {
-        ahrefsKeywords = ahrefsResult.rows.slice(0, 8).map((r) => r.keyword);
+        ahrefsTerms = ahrefsResult.terms;
+        ahrefsKeywords = ahrefsTerms.map((r) => r.keyword);
         ahrefsMergedCount = ahrefsKeywords.length;
       } else {
         ahrefsError = ahrefsResult.error;
-        console.warn("[extract-keywords] Ahrefs:", ahrefsError);
+        console.warn(
+          "[extract-keywords] Ahrefs:",
+          ahrefsError,
+          "seed=",
+          ahrefsResult.seedUsed,
+          "country=",
+          ahrefsResult.country
+        );
       }
     }
 
@@ -155,6 +160,21 @@ Include 8–12 distinct phrases total (fewer overlaps if Ahrefs terms were liste
       const e = apiErr as { status?: number; message?: string; error?: { message?: string } };
       const detail = e.error?.message ?? e.message ?? String(apiErr);
       console.error("[extract-keywords] Anthropic:", e.status, detail);
+      if (ahrefsKeywords.length > 0) {
+        return NextResponse.json({
+          keywords: isWeed ? ahrefsKeywords : ensureWordPressHighIntentPhrases(ahrefsKeywords, safeTitle),
+          sources: {
+            ahrefs: {
+              enabled: true,
+              mergedCount: ahrefsMergedCount,
+              error: ahrefsError ?? null,
+              country: ahrefsCountry,
+              seed: ahrefsSeed,
+              terms: ahrefsTerms,
+            },
+          },
+        });
+      }
       return NextResponse.json(
         {
           error:
@@ -177,6 +197,21 @@ Include 8–12 distinct phrases total (fewer overlaps if Ahrefs terms were liste
       claudeKeywords = parseKeywordsFromModelText(text);
     } catch (parseErr) {
       console.error("[extract-keywords] Parse error:", parseErr, "Raw:", text.slice(0, 500));
+      if (ahrefsKeywords.length > 0) {
+        return NextResponse.json({
+          keywords: isWeed ? ahrefsKeywords : ensureWordPressHighIntentPhrases(ahrefsKeywords, safeTitle),
+          sources: {
+            ahrefs: {
+              enabled: true,
+              mergedCount: ahrefsMergedCount,
+              error: ahrefsError ?? null,
+              country: ahrefsCountry,
+              seed: ahrefsSeed,
+              terms: ahrefsTerms,
+            },
+          },
+        });
+      }
       return NextResponse.json(
         { error: "Could not parse keywords from the model. Try again." },
         { status: 500 }
@@ -203,6 +238,8 @@ Include 8–12 distinct phrases total (fewer overlaps if Ahrefs terms were liste
           mergedCount: ahrefsMergedCount,
           error: ahrefsError ?? null,
           country: ahrefsKey ? ahrefsCountry : null,
+          seed: ahrefsSeed,
+          terms: ahrefsTerms,
         },
       },
     });

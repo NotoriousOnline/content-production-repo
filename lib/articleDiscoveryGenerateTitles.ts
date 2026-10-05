@@ -1,13 +1,23 @@
 import { callClaude, isAnthropicBillingError } from "@/lib/anthropic";
+import { enrichDiscoveryWithAhrefs, rankPoolByAhrefsVolume } from "@/lib/articleDiscoveryAhrefs";
 import type {
   ArticleDiscoveryPayload,
   DiscoveryCandidate,
   TitleDiscoveryOutputItem,
 } from "@/lib/articleDiscoveryTypes";
+import {
+  FRESH_MAX_HOURS,
+  MIN_ORG_TRAFFIC,
+  ORGANIC_MAX_HOURS,
+  ORGANIC_MIN_HOURS,
+  hoursFromPubDate,
+  laneFromHours,
+  type DiscoveryLane,
+} from "@/lib/articleDiscoveryWindows";
 import { isGoogleNewsArticleUrl, resolveGoogleNewsUrls } from "@/lib/resolveGoogleNewsUrl";
 import { GREEN_ORG_CATEGORIES, type GreenOrgCategory } from "@/lib/rssFeeds";
 
-const SYSTEM_PROMPT = `You are the news discovery agent for Green.org. Every morning you scan a fixed set of six sources, filter the day's stories against our editorial categories and freshness window, and return a clean shortlist of candidates. You do not pick the final two. You surface everything that qualifies so a human can choose.
+const SYSTEM_PROMPT = `You are the news discovery agent for Green.org. Every morning you scan a fixed set of six sources, filter stories against our editorial categories, and return a clean shortlist of candidates. You do not pick the final two. You surface everything that qualifies so a human can choose.
 
 ## SOURCES (already fetched for you — do not invent outlets outside this list)
 
@@ -23,22 +33,29 @@ const SYSTEM_PROMPT = `You are the news discovery agent for Green.org. Every mor
 A story only qualifies if it maps cleanly to one of: Energy, Tech, Climate, Transportation.
 Discard anything that does not map cleanly. Tag every survivor with its category.
 
-## FRESHNESS RULE (hard filter)
+## TWO LANES (both are wanted)
 
-News articles must be live on Green.org within 24 hours of the original story breaking to be eligible for Google News pickup. Only surface stories that can still be briefed, written, and published before the 24-hour mark from now.
-
-- Find the earliest publish timestamp for the story across the provided items. Reuters is usually the truest break time when present.
-- Calculate hours elapsed since that break time using the "now" timestamp supplied in the user message.
-- Drop anything that cannot realistically be briefed, written, and published before break + 24h.
+### Lane "fresh" — 24-hour Google News window
+News articles must be live on Green.org within 24 hours of the original story breaking.
+- Find the earliest publish timestamp. Reuters is usually the truest break time when present.
+- Calculate hours elapsed using the "now" timestamp in the user message.
+- Keep only stories that can still be briefed, written, and published before break + 24h.
 - Prefer stories that broke in the last few hours over ones already near the deadline.
-- Never invent a timestamp. If you cannot confirm when a story broke, set freshness_risk true, put broke_at as "unconfirmed", hours_ago as null, and only keep the story if the source pubDate is missing but the item still looks same-day / urgent — otherwise drop it.
+
+### Lane "organic" — 2–3 week articles with organic search traffic
+Also keep stories that broke about 2 days to 3 weeks ago (48 hours through 21 days). These are rewrite / traffic candidates, not Google News same-day pickup. Do not drop them for being outside the 24h window. Tag them lane "organic".
+
+## TIMESTAMPS
+
+- Never invent a timestamp.
+- If you cannot confirm when a story broke, set freshness_risk true, broke_at as "unconfirmed", hours_ago as null, and lane as "organic" only if the item does not look same-day. Same-day / urgent undated items can be lane "fresh" with freshness_risk true.
 
 ## SELECTION LOGIC
 
 1. Cluster duplicate coverage of the same underlying story so it appears once, not per outlet.
-2. Keep only stories that fit a category and pass the freshness rule.
+2. Keep stories that fit a category and belong to one of the two lanes.
 3. Return every survivor as a shortlist, ordered strongest first. Do not trim to two. Do not choose the final two for the human.
-4. Aim for 5–10 candidates on a busy day; on a slow day return whatever passes (even 2–3).
+4. Aim for a mix: about 5–8 fresh and 4–8 organic on a busy day. On a slow day return whatever passes.
 
 ## WORKING TITLES
 
@@ -60,7 +77,8 @@ Return ONLY valid JSON (no markdown fences, no preamble) in this exact shape:
       "deadline": string,
       "freshness_risk": boolean,
       "angle": string,
-      "distribution_fit": string
+      "distribution_fit": string,
+      "lane": "fresh" | "organic"
     }
   ]
 }
@@ -68,7 +86,7 @@ Return ONLY valid JSON (no markdown fences, no preamble) in this exact shape:
 also_covered_by: "None" or a short comma-separated list of other outlets from the six that covered the same story.
 distribution_fit: one of "LinkedIn", "social", "Saturday email", or a combination like "LinkedIn / social".
 angle: one line on why this could work and how Green.org would frame it.
-deadline: break time + 24h as a readable UTC string, or "unknown — freshness risk" when unconfirmed.
+deadline: for fresh stories, break time + 24h as a readable UTC string; for organic stories use "traffic candidate — outside 24h window".
 source_url must be the direct publisher article URL from the fetched items (reuters.com, bloomberg.com, etc). Never use news.google.com links.`;
 
 function buildUserPrompt(articles: ArticleDiscoveryPayload[], nowIso: string): string {
@@ -81,7 +99,7 @@ function buildUserPrompt(articles: ArticleDiscoveryPayload[], nowIso: string): s
 
   return `Now (UTC): ${nowIso}
 
-Scan these fetched items from the six Green.org sources. Apply category + freshness filters, cluster duplicates, and return the shortlist JSON.
+Scan these fetched items from the six Green.org sources. Apply category filters, cluster duplicates, and return BOTH lanes: fresh 24h news AND 2–3 week organic-traffic candidates. Items are already mixed with higher Ahrefs topic-search demand first.
 
 Fetched items:
 ${lines.join("\n\n")}
@@ -174,7 +192,15 @@ function normalizeCandidate(raw: Record<string, unknown>): DiscoveryCandidate | 
       typeof raw.distribution_fit === "string" && raw.distribution_fit.trim()
         ? raw.distribution_fit.trim()
         : "social",
+    lane: assignLane(hours_ago, raw.lane),
   };
+}
+
+function assignLane(hoursAgo: number | null, rawLane: unknown): DiscoveryLane {
+  const fromHours = laneFromHours(hoursAgo);
+  if (fromHours) return fromHours;
+  if (rawLane === "fresh" || rawLane === "organic") return rawLane;
+  return hoursAgo == null ? "fresh" : "organic";
 }
 
 function parseCandidatesJson(content: string): DiscoveryCandidate[] {
@@ -207,13 +233,27 @@ function parseCandidatesJson(content: string): DiscoveryCandidate[] {
   throw lastErr instanceof Error ? lastErr : new Error("Failed to parse shortlist JSON");
 }
 
-/** Drop candidates that clearly cannot publish inside 24h (hours_ago >= 23). */
-function applyHardFreshnessCut(candidates: DiscoveryCandidate[]): DiscoveryCandidate[] {
+/** Keep 24h news plus 2–3 week organic-traffic candidates. */
+function applyAgeWindow(candidates: DiscoveryCandidate[]): DiscoveryCandidate[] {
   return candidates.filter((c) => {
-    if (c.hours_ago === null) return c.freshness_risk; // keep flagged risks for human review only if model kept them
-    // Need buffer to brief/write/publish — drop if already past ~22h
-    return c.hours_ago < 22;
+    if (c.hours_ago === null) return true;
+    if (c.hours_ago < FRESH_MAX_HOURS) return true;
+    return c.hours_ago >= ORGANIC_MIN_HOURS && c.hours_ago <= ORGANIC_MAX_HOURS;
   });
+}
+
+function keepAfterAhrefsTraffic(items: TitleDiscoveryOutputItem[]): TitleDiscoveryOutputItem[] {
+  const kept = items.filter((item) => {
+    const lane = item.lane ?? laneFromHours(item.hours_ago ?? null) ?? "organic";
+    const traffic = item.ahrefs?.orgTraffic ?? 0;
+    if (lane === "fresh") return true;
+    return traffic >= MIN_ORG_TRAFFIC;
+  });
+  const fresh = kept.filter((i) => i.lane === "fresh");
+  const organic = kept
+    .filter((i) => i.lane !== "fresh")
+    .sort((a, b) => (b.ahrefs?.orgTraffic ?? 0) - (a.ahrefs?.orgTraffic ?? 0));
+  return [...fresh, ...organic];
 }
 
 /** Resolve any leftover Google News redirects; drop ones that cannot be decoded. */
@@ -252,6 +292,7 @@ function toOutputItems(candidates: DiscoveryCandidate[]): TitleDiscoveryOutputIt
     freshness_risk: c.freshness_risk,
     angle: c.angle,
     distribution_fit: c.distribution_fit,
+    lane: c.lane ?? assignLane(c.hours_ago, null),
   }));
 }
 
@@ -331,17 +372,21 @@ CRITICAL OUTPUT RULE: Your entire response must be one JSON object matching the 
   }
 }
 
-/** Prefer dated, fresher items so the model stays inside the 24h window. */
+/** Mix same-day news with 2–3 week stories so both lanes reach the model. */
 function prioritizeArticlesForShortlist(
   articles: ArticleDiscoveryPayload[],
-  limit = 40
+  limit = 56
 ): ArticleDiscoveryPayload[] {
-  const scored = articles.map((a) => {
-    const t = a.pubDate ? Date.parse(a.pubDate) : 0;
-    return { a, t: Number.isFinite(t) ? t : 0 };
-  });
-  scored.sort((x, y) => y.t - x.t);
-  return scored.slice(0, limit).map((s) => s.a);
+  const now = Date.now();
+  const fresh: ArticleDiscoveryPayload[] = [];
+  const organic: ArticleDiscoveryPayload[] = [];
+  for (const a of articles) {
+    const hours = hoursFromPubDate(a.pubDate, now);
+    if (hours == null || hours < FRESH_MAX_HOURS + 14) fresh.push(a);
+    else if (hours >= ORGANIC_MIN_HOURS && hours <= ORGANIC_MAX_HOURS) organic.push(a);
+  }
+  const half = Math.max(8, Math.floor(limit / 2));
+  return [...fresh.slice(0, half), ...organic.slice(0, half)].slice(0, limit);
 }
 
 export type GenerateDiscoveryTitlesResult = {
@@ -352,8 +397,8 @@ export type GenerateDiscoveryTitlesResult = {
 };
 
 /**
- * Green.org news discovery shortlist — category + 24h freshness + duplicate clustering.
- * Returns candidates for a human to pick the final two (does not pick for them).
+ * Green.org news discovery shortlist — 24h news + 2–3 week organic-traffic stories.
+ * Returns candidates for a human to pick (does not pick for them).
  */
 export async function generateDiscoveryTitles(
   articles: ArticleDiscoveryPayload[]
@@ -374,11 +419,13 @@ export async function generateDiscoveryTitles(
   }
 
   const nowIso = new Date().toISOString();
-  const pool = prioritizeArticlesForShortlist(articles, 40);
+  const recencyPool = prioritizeArticlesForShortlist(articles, 56);
+  const ranked = await rankPoolByAhrefsVolume(recencyPool);
+  const pool = ranked.articles;
   let candidates: DiscoveryCandidate[] | null = null;
   let provider: "openai" | "claude" | "none" = "none";
   let openaiQuotaHit = false;
-  let warning: string | undefined;
+  let warning: string | undefined = ranked.warning;
 
   // Prefer Claude for batch shortlist — OpenAI is often quota-limited in this project.
   if (hasClaude) {
@@ -413,16 +460,16 @@ export async function generateDiscoveryTitles(
       results: [],
       provider: hasClaude ? "claude" : openaiKey ? "openai" : "none",
       error:
-        "No qualifying stories found (or shortlist generation failed). Check feeds, freshness window, and API keys.",
+        "No qualifying stories found (or shortlist generation failed). Check feeds, age window, and API keys.",
     };
   }
 
-  const filtered = applyHardFreshnessCut(candidates);
+  const filtered = applyAgeWindow(candidates);
   if (filtered.length === 0) {
     return {
       results: [],
       provider,
-      error: "Stories were found but none remain publishable inside the 24-hour Google News window.",
+      error: "Stories were found but none sit in the 24h news window or the 2–3 week organic-traffic window.",
     };
   }
 
@@ -436,11 +483,28 @@ export async function generateDiscoveryTitles(
   }
 
   if (openaiQuotaHit && provider === "claude") {
-    warning = "OpenAI quota exceeded — shortlist used Claude (Anthropic).";
+    const quotaNote = "OpenAI quota exceeded — shortlist used Claude (Anthropic).";
+    warning = warning ? `${quotaNote} ${warning}` : quotaNote;
+  }
+
+  const enriched = await enrichDiscoveryWithAhrefs(toOutputItems(withPublisherUrls));
+  if (enriched.warning) {
+    warning = warning ? `${warning} ${enriched.warning}` : enriched.warning;
+  }
+
+  const results = keepAfterAhrefsTraffic(enriched.items);
+  if (results.length === 0) {
+    return {
+      results: [],
+      provider,
+      error:
+        "No 24h stories remained, and no 2–3 week articles had Ahrefs organic traffic. Try again later or check AHREFS_API_KEY.",
+      ...(warning ? { warning } : {}),
+    };
   }
 
   return {
-    results: toOutputItems(withPublisherUrls),
+    results,
     provider,
     ...(warning ? { warning } : {}),
   };

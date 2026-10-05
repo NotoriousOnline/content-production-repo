@@ -3,7 +3,7 @@ import type { ArticleDiscoveryPayload, FetchArticlesResponse } from "@/lib/artic
 import { describeFetchError, serverFetchOrigin } from "@/lib/serverFetch";
 import { serverLog } from "@/lib/serverLog";
 
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 export async function GET(request: Request) {
   const base = serverFetchOrigin(request.url);
@@ -108,7 +108,7 @@ export async function GET(request: Request) {
     return NextResponse.json({
       success: false,
       error:
-        "No qualifying stories in the 24h window. Check feeds, categories, or API keys/billing.",
+        "No qualifying stories in the 24h or 2–3 week windows. Check feeds, Ahrefs traffic, or API keys/billing.",
       count: 0,
       results: [],
     }, { status: 503 });
@@ -144,18 +144,31 @@ export async function GET(request: Request) {
       meta: typeof errBody === "object" && errBody !== null ? (errBody as Record<string, unknown>) : undefined,
     });
     return NextResponse.json(
-      { success: false, error: "Send to Slack failed" },
+      {
+        success: false,
+        error:
+          typeof errBody === "object" && errBody && "error" in errBody && typeof (errBody as { error?: string }).error === "string"
+            ? (errBody as { error: string }).error
+            : "Send to Slack failed",
+      },
       { status: 502 }
     );
   }
-  const slackData = await slackRes.json();
+  const slackData = (await slackRes.json()) as {
+    count?: number;
+    warning?: string;
+    interactive?: boolean;
+  };
   console.log("[article-title-discovery/run] Sent", slackData.count, "to Slack");
+
+  const warning = [generateWarning, slackData.warning].filter(Boolean).join(" ");
 
   return NextResponse.json({
     success: true,
     count: results.length,
     results,
-    ...(generateWarning ? { warning: generateWarning } : {}),
+    interactive: Boolean(slackData.interactive),
+    ...(warning ? { warning } : {}),
     ...(generatePayload.provider ? { provider: generatePayload.provider } : {}),
   });
 }

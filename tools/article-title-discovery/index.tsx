@@ -25,12 +25,28 @@ function formatCountdown(ms: number): string {
   return `${h}h ${m}m ${s}s`;
 }
 
+type SlackSetup = {
+  keysSet: boolean;
+  botOk: boolean;
+  botName: string | null;
+  channel: string | null;
+  error: string | null;
+  nextStep: string | null;
+  interactPath: string;
+  socketConfigured?: boolean;
+  socketConnected?: boolean;
+  ticksReady?: boolean;
+};
+
 type DiscoveryInfo = {
   primarySource: "six-sources" | "inoreader+six-sources";
   sourceCount: number;
   sourceNames: string[];
   inoreaderReady: boolean;
   inoreaderDisplayLabel: string | null;
+  ahrefsReady?: boolean;
+  slackInteractive?: boolean;
+  slackSetup?: SlackSetup;
 };
 
 export default function ArticleTitleDiscoveryTool() {
@@ -39,9 +55,11 @@ export default function ArticleTitleDiscoveryTool() {
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<TitleDiscoveryOutputItem[]>([]);
+  const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set());
   const [lastRun, setLastRun] = useState<Date | null>(null);
   const [countdown, setCountdown] = useState("");
   const [discoveryInfo, setDiscoveryInfo] = useState<DiscoveryInfo | null>(null);
+  const [slackTestLoading, setSlackTestLoading] = useState(false);
 
   useEffect(() => {
     const tick = () => {
@@ -56,19 +74,28 @@ export default function ArticleTitleDiscoveryTool() {
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+    const load = async () => {
       try {
         const res = await fetch("/api/article-title-discovery/info");
         const data = (await res.json()) as DiscoveryInfo;
         if (!cancelled && res.ok && data?.primarySource) {
           setDiscoveryInfo(data);
         }
+        return data;
       } catch {
-        /* ignore */
+        return null;
       }
-    })();
+    };
+    void load();
+    const id = setInterval(() => {
+      void (async () => {
+        const data = await load();
+        if (data?.slackSetup?.ticksReady) clearInterval(id);
+      })();
+    }, 3000);
     return () => {
       cancelled = true;
+      clearInterval(id);
     };
   }, []);
 
@@ -85,15 +112,40 @@ export default function ArticleTitleDiscoveryTool() {
         return;
       }
       setResults(data.results ?? []);
+      setSelectedUrls(new Set());
       setLastRun(new Date());
       if (data.warning) setWarning(data.warning);
       setSuccess(
-        `Done — ${data.count ?? 0} shortlist candidates sent to Slack${data.provider ? ` (via ${data.provider})` : ""}. Pick the final two yourself.`
+        Boolean(data.interactive)
+          ? `Done — ${data.count ?? 0} candidates posted to Slack. Anyone in the channel can tick Select; everyone else sees the pick.`
+          : `Done — ${data.count ?? 0} candidates sent to Slack${data.provider ? ` (via ${data.provider})` : ""}.`
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSlackTest = async () => {
+    setSlackTestLoading(true);
+    setSuccess(null);
+    setWarning(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/article-title-discovery/slack-test", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Slack test post failed");
+        return;
+      }
+      setSuccess(
+        "Test checklist posted to Slack. Tick Select — everyone else in the channel should see it."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Slack test failed");
+    } finally {
+      setSlackTestLoading(false);
     }
   };
 
@@ -111,12 +163,22 @@ export default function ArticleTitleDiscoveryTool() {
           6 sources · Energy / Tech / Climate / Transportation
         </span>
         <span className="inline-flex items-center rounded-full bg-amber-100 px-3 py-0.5 text-xs font-medium text-amber-900">
-          24h freshness window
+          24h news + 2–3 week traffic
         </span>
         {discoveryInfo?.inoreaderReady ? (
           <span className="inline-flex items-center rounded-full bg-sky-100 px-3 py-0.5 text-xs font-medium text-sky-900">
             Inoreader merge
             {discoveryInfo.inoreaderDisplayLabel ? ` · ${discoveryInfo.inoreaderDisplayLabel}` : ""}
+          </span>
+        ) : null}
+        {discoveryInfo?.ahrefsReady ? (
+          <span className="inline-flex items-center rounded-full bg-orange-100 px-3 py-0.5 text-xs font-medium text-orange-900">
+            Ahrefs traffic ranking
+          </span>
+        ) : null}
+        {discoveryInfo?.slackInteractive ? (
+          <span className="inline-flex items-center rounded-full bg-pink-100 px-3 py-0.5 text-xs font-medium text-pink-900">
+            Slack live shared picks
           </span>
         ) : null}
         <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-mono font-medium text-slate-700">
@@ -138,10 +200,49 @@ export default function ArticleTitleDiscoveryTool() {
           ))}
         </div>
         <p className="mt-3 text-sm text-slate-600">
-          Scans these outlets only, clusters duplicate coverage, keeps stories that fit a category and
-          can still publish inside 24 hours of break time, then returns a shortlist. You pick the final
-          two.
+          Scans these outlets, keeps 24-hour news plus 2–3 week articles that already have Ahrefs organic
+          traffic, then posts a shared Slack checklist. When anyone ticks Select, the whole channel sees
+          who picked it.
         </p>
+        {discoveryInfo?.slackSetup ? (
+          <div
+            className={`mt-3 rounded-lg border p-3 text-sm ${
+              discoveryInfo.slackSetup.ticksReady
+                ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+                : "border-pink-200 bg-pink-50 text-pink-950"
+            }`}
+          >
+            <p className="font-medium">
+              Slack bot {discoveryInfo.slackSetup.botOk ? "connected" : "not connected"}
+              {discoveryInfo.slackSetup.botName ? ` as @${discoveryInfo.slackSetup.botName}` : ""}.
+              {discoveryInfo.slackSetup.ticksReady
+                ? " Shared ticks are live."
+                : " Shared ticks are not live yet."}
+            </p>
+            {discoveryInfo.slackSetup.nextStep ? (
+              <p className="mt-1">{discoveryInfo.slackSetup.nextStep}</p>
+            ) : null}
+            {!discoveryInfo.slackSetup.ticksReady ? (
+              <ol className="mt-2 list-decimal space-y-1 pl-5">
+                <li>Slack app → Socket Mode → Enable Socket Mode</li>
+                <li>
+                  Interactivity &amp; Shortcuts → On. Leave Request URL empty while Socket Mode is on.
+                </li>
+                <li>
+                  Basic Information → App-Level Tokens → Generate Token and Scopes → add{" "}
+                  <span className="font-mono text-xs">connections:write</span> on the same app as the bot
+                </li>
+                <li>
+                  Put the <span className="font-mono text-xs">xapp-</span> token in{" "}
+                  <span className="font-mono text-xs">.env.local</span> as{" "}
+                  <span className="font-mono text-xs">SLACK_APP_TOKEN</span>, then restart{" "}
+                  <span className="font-mono text-xs">npm run dev</span>
+                </li>
+                <li>Click Test Slack ticks and tick Select on that new message</li>
+              </ol>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div>
@@ -174,11 +275,19 @@ export default function ArticleTitleDiscoveryTool() {
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                 />
               </svg>
-              Scanning sources and building shortlist...
+              Scanning sources, ranking with Ahrefs, and building shortlist...
             </>
           ) : (
             "Run Now"
           )}
+        </button>
+        <button
+          type="button"
+          onClick={handleSlackTest}
+          disabled={loading || slackTestLoading}
+          className="ml-2 inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-800 shadow-sm transition-colors hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {slackTestLoading ? "Posting Slack test..." : "Test Slack ticks"}
         </button>
 
         {success && (
@@ -199,46 +308,128 @@ export default function ArticleTitleDiscoveryTool() {
       </div>
 
       {results.length > 0 && (
-        <div>
-          <h2 className="text-sm font-medium text-slate-500">
-            Shortlist preview ({results.length}) — pick the final two yourself
-          </h2>
-          <div className="mt-4 space-y-4">
-            {results.map((r, i) => (
-              <div
-                key={`${r.source_url}-${i}`}
-                className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
-              >
-                <p className="text-lg font-semibold text-slate-900">
-                  {i + 1}. {r.suggested_title}
-                </p>
-                {r.category ? (
-                  <p className="mt-2 text-sm text-slate-700">
-                    <span className="font-medium text-slate-800">Category:</span> {r.category}
-                  </p>
-                ) : null}
-                {r.angle ? (
-                  <p className="mt-2 text-sm text-slate-700">
-                    <span className="font-medium text-slate-800">Angle:</span> {r.angle}
-                  </p>
-                ) : null}
-                <a
-                  href={r.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-2 inline-block text-sm text-violet-600 hover:underline"
-                >
-                  {r.source_name ? `${r.source_name} — ${r.source_url}` : r.source_url}
-                </a>
-              </div>
-            ))}
-          </div>
-        </div>
+        <ChecklistPreview
+          results={results}
+          selectedUrls={selectedUrls}
+          onToggle={(url) => {
+            setSelectedUrls((prev) => {
+              const next = new Set(prev);
+              if (next.has(url)) next.delete(url);
+              else next.add(url);
+              return next;
+            });
+          }}
+        />
       )}
 
       <div className="text-sm text-slate-500">
         Last run: {lastRun ? lastRun.toLocaleString() : "never"}
       </div>
+    </div>
+  );
+}
+
+function formatCompact(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "n/a";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return Math.round(n).toLocaleString("en-US");
+}
+
+function trafficSummary(r: TitleDiscoveryOutputItem): string {
+  const visits = r.ahrefs?.orgTraffic;
+  const volume = r.ahrefs?.topicVolume;
+  if (visits != null && visits > 0) return `${formatCompact(visits)} org visits/mo`;
+  if (volume != null && volume > 0) return `${formatCompact(volume)} topic vol/mo`;
+  return "traffic n/a";
+}
+
+function ChecklistPreview({
+  results,
+  selectedUrls,
+  onToggle,
+}: {
+  results: TitleDiscoveryOutputItem[];
+  selectedUrls: Set<string>;
+  onToggle: (url: string) => void;
+}) {
+  const fresh = results.filter((r) => r.lane !== "organic");
+  const organic = results.filter((r) => r.lane === "organic");
+
+  return (
+    <div>
+      <h2 className="text-sm font-medium text-slate-500">
+        Checklist preview ({results.length}) — {selectedUrls.size} selected · Slack ticks are shared with the channel
+      </h2>
+      <ChecklistGroup
+        heading="24h news"
+        items={fresh}
+        selectedUrls={selectedUrls}
+        onToggle={onToggle}
+      />
+      <ChecklistGroup
+        heading="2–3 weeks · Ahrefs organic traffic"
+        items={organic}
+        selectedUrls={selectedUrls}
+        onToggle={onToggle}
+      />
+    </div>
+  );
+}
+
+function ChecklistGroup({
+  heading,
+  items,
+  selectedUrls,
+  onToggle,
+}: {
+  heading: string;
+  items: TitleDiscoveryOutputItem[];
+  selectedUrls: Set<string>;
+  onToggle: (url: string) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{heading}</h3>
+      <ul className="mt-2 divide-y divide-slate-100 overflow-hidden rounded-lg border border-slate-200 bg-white">
+        {items.map((r) => {
+          const checked = selectedUrls.has(r.source_url);
+          return (
+            <li key={r.source_url}>
+              <label
+                className={`flex cursor-pointer items-start gap-3 px-4 py-3 ${
+                  checked ? "bg-violet-50" : "bg-white hover:bg-slate-50"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => onToggle(r.source_url)}
+                  className="mt-1 h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-slate-900">{r.suggested_title}</span>
+                  <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+                    <span>{r.source_name || "Source"}</span>
+                    {r.category ? <span>· {r.category}</span> : null}
+                    <span>· {trafficSummary(r)}</span>
+                    <a
+                      href={r.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-violet-600 hover:underline"
+                    >
+                      Open
+                    </a>
+                  </span>
+                </span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

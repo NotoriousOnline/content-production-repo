@@ -1,4 +1,5 @@
 import type { ArticleDiscoveryPayload } from "@/lib/articleDiscoveryTypes";
+import { MAX_POOL_AGE_MS } from "@/lib/articleDiscoveryWindows";
 import { resolveGoogleNewsUrls, isGoogleNewsArticleUrl } from "@/lib/resolveGoogleNewsUrl";
 import { GREEN_ORG_DISCOVERY_SOURCES } from "@/lib/rssFeeds";
 
@@ -11,10 +12,9 @@ type DiscoveryArticle = {
 
 const USER_AGENT = "SEO-Tools-Platform/1.0 (Green.org News Discovery)";
 
-/** Keep raw pool slightly wider than 24h so clustering can find earlier breaks. */
-const MAX_POOL_AGE_MS = 1000 * 60 * 60 * 36;
-const MAX_PER_SOURCE = 25;
-const MAX_TOTAL = 80;
+/** Include 24h news plus 2–3 week organic-traffic candidates. */
+const MAX_PER_SOURCE = 40;
+const MAX_TOTAL = 120;
 
 function stripCdata(text: string): string {
   return text
